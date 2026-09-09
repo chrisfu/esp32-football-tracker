@@ -235,6 +235,33 @@ A 31 ms full redraw means rendering is not the bottleneck and DMA is not needed
 for our workload, though the factory firmware proves it available if we ever
 want it.
 
+### ✅ Touch (XPT2046) — working, calibrated
+
+Driven directly rather than through a library; see `src/touch_input.cpp` for
+why. Verified on hardware across 366 captured samples with all four gestures
+firing.
+
+| Measurement | Value |
+|---|---|
+| IRQ idle level | HIGH (correct — active low on contact) |
+| Untouched baseline | X ≈ 500, Y ≈ 3520, **Z ≈ 1–2** |
+| Pressure during real use | **381 – 1003** (threshold set at 300) |
+| Calibration, X | raw `559 … 3571`, not inverted |
+| Calibration, Y | raw `-41 … 3903`, not inverted |
+
+The untouched baseline is worth recording: it is the signature of a working SPI
+link. All-zeroes or all-4095 would mean the bus is misconfigured, and a small
+non-zero X/Y with a near-zero Z is exactly what a healthy idle panel reports.
+
+**`rawMinY` is legitimately negative.** The two-point fit extrapolates to −41 at
+the top edge, because the calibration targets are inset from the corners. An
+unsigned type clamps that to 0 and compresses the top of the screen by roughly
+2.5 px, so calibration bounds are stored signed.
+
+Press detection uses the IRQ line rather than polling position over SPI: one
+digital read instead of nine transfers per idle poll. The same line is the
+`ext0` deep-sleep wake source, so this doubles as validation of the power plan.
+
 ### ⚠️ Light sensor (GPIO34) reads zero — unresolved
 
 `analogRead` returns **exactly 0 with no variance** across averaged samples.

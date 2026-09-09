@@ -561,7 +561,8 @@ Each item is one branch, per R1.
 * [x] Hardware discovery — chip, flash, pinout, partition table, API limits
 * [x] PlatformIO scaffold + display bring-up — panel identified as an inverted
       ILI9341 variant; 31 ms full redraw measured
-* [ ] Touch driver + calibration
+* [x] Touch driver + calibration — hand-rolled XPT2046, IRQ-based press
+      detection, two-point calibration, tap/swipe gestures all verified
 * [ ] Screen manager and auto-cycling with placeholder data
 * [ ] LittleFS, config and cache layer with atomic writes
 * [ ] Wi-Fi provisioning — SoftAP + captive portal
