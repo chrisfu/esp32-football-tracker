@@ -235,32 +235,59 @@ A 31 ms full redraw means rendering is not the bottleneck and DMA is not needed
 for our workload, though the factory firmware proves it available if we ever
 want it.
 
-### ✅ Touch (XPT2046) — working, calibrated
+### ✅ Touch (XPT2046) — working, calibrated, **axes transposed**
 
 Driven directly rather than through a library; see `src/touch_input.cpp` for
-why. Verified on hardware across 366 captured samples with all four gestures
-firing.
+why. Verified on hardware, including a swipe-direction check.
 
 | Measurement | Value |
 |---|---|
 | IRQ idle level | HIGH (correct — active low on contact) |
-| Untouched baseline | X ≈ 500, Y ≈ 3520, **Z ≈ 1–2** |
-| Pressure during real use | **381 – 1003** (threshold set at 300) |
-| Calibration, X | raw `559 … 3571`, not inverted |
-| Calibration, Y | raw `-41 … 3903`, not inverted |
+| Untouched baseline | X ≈ 500, Y ≈ 3520, **Z ≈ 1–3** |
+| Pressure on deliberate contact | **500 – 1000** |
+| Pressure threshold | 200 (see below) |
+| **Axes** | **TRANSPOSED** — controller Y drives screen X |
+| Calibration, screen X | raw `195 … 3711`, not inverted |
+| Calibration, screen Y | raw `347 … 3682`, not inverted |
 
-The untouched baseline is worth recording: it is the signature of a working SPI
-link. All-zeroes or all-4095 would mean the bus is misconfigured, and a small
-non-zero X/Y with a near-zero Z is exactly what a healthy idle panel reports.
+#### The digitizer is rotated relative to the display
 
-**`rawMinY` is legitimately negative.** The two-point fit extrapolates to −41 at
-the top edge, because the calibration targets are inset from the corners. An
-unsigned type clamps that to 0 and compresses the top of the screen by roughly
-2.5 px, so calibration bounds are stored signed.
+The panel is 240×320 native portrait and we run it landscape, but the touch
+controller reports in the panel's own orientation. Measured axis response:
 
-Press detection uses the IRQ line rather than polling position over SPI: one
-digital read instead of nine transfers per idle poll. The same line is the
-`ext0` deep-sleep wake source, so this doubles as validation of the power plan.
+```
+moving along screen X:  rawX   -76,  rawY +2910   <- raw Y drives screen X
+moving along screen Y:  rawX +2568,  rawY   +32   <- raw X drives screen Y
+```
+
+A 38× ratio — utterly unambiguous once measured on the correct axes.
+
+**This is easy to get wrong in a way that looks right.** A two-point
+calibration using opposite corners cannot detect it: both targets differ in
+both axes, so "raw X drives screen X" and "raw X drives screen Y" fit the
+measurements equally well and both produce a clean-looking monotonic result.
+The symptom is a display that draws and taps plausibly but whose swipes go the
+wrong way — it presents as *the screen needing to be rotated 90° under the
+digitizer*.
+
+Calibration therefore uses **three targets** — top-left, top-right,
+bottom-left — so movement along each screen axis is isolated and the axis
+assignment is measured. Firmware then asks for a rightward and a downward swipe
+and checks the decoder agrees, so the device reports an orientation fault itself
+instead of relying on someone being asked the right question.
+
+#### Pressure threshold
+
+Chosen from measurement. Idle reads Z = 1–3 and deliberate contact 500–1000. An
+initial threshold of 300 was observed rejecting the onset of a genuine touch at
+Z = 238, so it sat too near light contact; 200 keeps roughly a 60× margin over
+the idle baseline while registering a light fingertip on the first sample.
+
+#### Press detection
+
+Uses the IRQ line rather than polling position over SPI: one digital read
+instead of nine transfers per idle poll. The same line is the `ext0` deep-sleep
+wake source, so this doubles as validation of the power plan.
 
 ### ⚠️ Light sensor (GPIO34) reads zero — unresolved
 
