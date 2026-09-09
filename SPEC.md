@@ -850,7 +850,8 @@ Each item is one branch, per R1.
 * [ ] Web interface settings pages — team, screens, dwell, brightness, cache
 * [ ] Provider abstraction + football-data.org client (table, fixtures, scorers)
 * [ ] api-sports client — streaming parse, filters, budget enforcement
-* [ ] The six real screens
+* [x] Live match screen — event columns, priority lock-back, provisional form
+* [ ] The six screens wired to real data
 * [ ] Live match polling with adaptive scheduling
 * [ ] Team crests — streaming PNG decode, permanent LittleFS cache (§4.7)
 * [ ] Hardware extras — LDR, RGB LED, speaker

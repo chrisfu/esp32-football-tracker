@@ -39,6 +39,25 @@ class ScreenManager {
   /// Screens are added in display order. Not owned; must outlive the manager.
   bool add(Screen* screen);
 
+  /**
+   * Nominate a screen that takes priority whenever it has data.
+   *
+   * While that screen reports data — a match in progress — the rotation stops
+   * being a carousel and becomes a leash:
+   *
+   *   - It is shown *immediately* when it becomes available, not on the next
+   *     rotation tick. A goal going in while the table is on screen should not
+   *     wait out the dwell.
+   *   - Other screens may still be swiped to, but once the dwell elapses the
+   *     device returns here rather than continuing round.
+   *   - An explicit double-tap hold still wins. Someone who has said "stay on
+   *     this" unambiguously must not be overridden, or the device fights them.
+   *   - Normal rotation resumes once the screen stops reporting data, which is
+   *     driven by the provider confirming the match over — never by the clock
+   *     passing 90, because a result can change in stoppage time.
+   */
+  void setPriority(Screen* screen);
+
   /// Drive the rotation and redraws. Call every loop iteration.
   void tick();
 
@@ -68,6 +87,12 @@ class ScreenManager {
 
   TFT_eSPI*             tft_  = nullptr;
   const model::Snapshot* data_ = nullptr;
+
+  /// Index of the priority screen, or 0xFF if none is set.
+  uint8_t  priorityIndex_ = 0xFF;
+  /// Whether the priority screen had data last tick, to detect the moment a
+  /// match starts (jump straight to it) and the moment it ends (resume).
+  bool     priorityWasActive_ = false;
 
   Screen*  screens_[kMaxScreens] = {nullptr};
   uint8_t  count_    = 0;

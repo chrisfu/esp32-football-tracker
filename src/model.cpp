@@ -66,6 +66,15 @@ constexpr SeedRow kSeedTable[] = {
 /// Our team, as football-data.org spells it.
 constexpr const char* kOurTla = "BOL";
 
+/**
+ * Whether to simulate a match in progress.
+ *
+ * True while the live-match UI is being developed, since a real live match
+ * involving one specific club cannot be summoned to order. Set to **false**
+ * once the API client supplies genuine live data.
+ */
+constexpr bool kSimulateLiveMatch = true;
+
 /// Top scorers from /competitions/ELC/scorers. `assists` is null on the free
 /// tier, so it is absent from the model entirely rather than shown as zero.
 ///
@@ -164,18 +173,94 @@ void loadPlaceholder(Snapshot& out) {
   }
 
   // --- Live match ---------------------------------------------------------
-  // Left inactive: no match is in progress, which is the normal case and
-  // exercises the screen manager's skip-empty-screens behaviour. Populated
-  // with plausible in-play state so the screen can still be inspected by
-  // flipping liveActive during development.
-  {
+  //
+  // Simulated, and gated by kSimulateLiveMatch, because a live match cannot be
+  // conjured on demand for testing and the behaviour around one is the most
+  // intricate in the UI: the priority lock-back, the event columns, and the
+  // provisional form chip all only appear while a match is on.
+  //
+  // Player names are the clubs' real scorers from the live API, so name
+  // lengths are honest. **Set kSimulateLiveMatch to false once the API client
+  // supplies real live data.**
+  if (kSimulateLiveMatch) {
     LiveMatch& m = out.live;
-    m.fixture = out.nextFixture;
-    m.fixture.homeGoals = 1;
-    m.fixture.awayGoals = 1;
-    m.fixture.state     = MatchState::InPlay;
-    m.minute            = 67;
-    out.liveActive      = false;
+    Fixture& f = m.fixture;
+    setField(f.homeTla, "BOL");
+    setField(f.awayTla, "CAR");
+    setField(f.homeName, "Bolton Wanderers FC");
+    setField(f.awayName, "Cardiff City FC");
+    setField(f.competition, "Championship");
+    f.kickoffUtc = 1789212600UL;
+    f.homeGoals  = 2;
+    f.awayGoals  = 1;
+    f.state      = MatchState::InPlay;
+    f.matchday   = 7;
+    f.weAreHome  = true;
+    f.valid      = true;
+    setField(f.homeForm, "DLLLL");
+    setField(f.awayForm, "DDLLD");
+
+    m.minute = 78;
+    m.extra  = 0;
+
+    // Chronological, as the API returns them. Deliberately mixed so every
+    // marker the renderer can draw is exercised: goal, penalty, both card
+    // colours, and both columns populated.
+    struct SeedEvent {
+      uint8_t     minute;
+      EventKind   kind;
+      bool        home;
+      const char* player;
+    };
+    constexpr SeedEvent kSeedEvents[] = {
+        {23, EventKind::Goal,       false, "Cian Ashford"},
+        {38, EventKind::YellowCard, false, "Perry Ng"},
+        {52, EventKind::Goal,       true,  "Sam Dalby"},
+        {61, EventKind::YellowCard, true,  "Xavier Simons"},
+        {70, EventKind::Penalty,    true,  "Thierry Gale"},
+        {76, EventKind::RedCard,    false, "Rubin Colwill"},
+    };
+    constexpr uint8_t kEventCount =
+        sizeof(kSeedEvents) / sizeof(kSeedEvents[0]);
+    static_assert(kEventCount <= LiveMatch::kMaxEvents,
+                  "seed events exceed LiveMatch capacity");
+
+    for (uint8_t i = 0; i < kEventCount; ++i) {
+      MatchEvent& e = m.events[i];
+      e.minute = kSeedEvents[i].minute;
+      e.extra  = 0;
+      e.kind   = kSeedEvents[i].kind;
+      e.home   = kSeedEvents[i].home;
+      setField(e.player, kSeedEvents[i].player);
+    }
+    m.eventCount = kEventCount;
+
+    // Provisional result from our point of view, as things stand.
+    const int8_t ours   = f.weAreHome ? f.homeGoals : f.awayGoals;
+    const int8_t theirs = f.weAreHome ? f.awayGoals : f.homeGoals;
+    m.provisionalResult = ours > theirs ? 'W' : (ours < theirs ? 'L' : 'D');
+
+    out.liveActive = true;
+
+    // With a match in progress, Next must show the *following* fixture, not
+    // the one being played — otherwise two screens show the same match and
+    // the genuinely useful information is lost. Real data: Norwich v Bolton,
+    // matchday 8, with Norwich's real derived form.
+    Fixture& n = out.nextFixture;
+    setField(n.homeTla, "NOR");
+    setField(n.awayTla, "BOL");
+    setField(n.homeName, "Norwich City FC");
+    setField(n.awayName, "Bolton Wanderers FC");
+    setField(n.competition, "Championship");
+    n.kickoffUtc = 1789907400UL;  // 2026-09-20T12:30:00Z
+    n.homeGoals  = -1;
+    n.awayGoals  = -1;
+    n.state      = MatchState::Scheduled;
+    n.matchday   = 8;
+    n.weAreHome  = false;
+    n.valid      = true;
+    setField(n.homeForm, "LWLWW");  // Norwich, derived from their results.
+    setField(n.awayForm, "DLLLL");  // Bolton's last five completed.
   }
 
   // --- Top scorers --------------------------------------------------------

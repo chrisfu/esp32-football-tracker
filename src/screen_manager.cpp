@@ -35,6 +35,16 @@ bool ScreenManager::add(Screen* screen) {
   return true;
 }
 
+void ScreenManager::setPriority(Screen* screen) {
+  priorityIndex_ = 0xFF;
+  for (uint8_t i = 0; i < count_; ++i) {
+    if (screens_[i] == screen) {
+      priorityIndex_ = i;
+      return;
+    }
+  }
+}
+
 uint8_t ScreenManager::nextWithData(uint8_t from, int8_t direction) const {
   if (count_ == 0) return 0;
 
@@ -119,9 +129,16 @@ void ScreenManager::drawFooter() {
     }
   }
 
-  // Pin state, shown on the left where it does not collide with the dots.
+  // Left of the dots: hold state, and whether a match is in progress. LIVE
+  // takes the slot when both apply, because it explains *why* the rotation is
+  // behaving differently, which matters more than restating that it is held.
   tft_->setTextDatum(ML_DATUM);
-  if (pinned_) {
+  const bool priorityActive =
+      priorityIndex_ < count_ && screens_[priorityIndex_]->hasData(*data_);
+  if (priorityActive) {
+    tft_->setTextColor(colour::kLoss, colour::kFooterBg);
+    tft_->drawString("LIVE", 6, cy, 2);
+  } else if (pinned_) {
     tft_->setTextColor(colour::kOurTeam, colour::kFooterBg);
     tft_->drawString("HELD", 6, cy, 2);
   }
@@ -178,6 +195,30 @@ void ScreenManager::handleGesture(touch::Gesture gesture) {
 void ScreenManager::tick() {
   if (count_ == 0) return;
 
+  // --- Priority screen ----------------------------------------------------
+  const bool priorityActive =
+      priorityIndex_ < count_ && screens_[priorityIndex_]->hasData(*data_);
+
+  if (priorityActive && !priorityWasActive_) {
+    // A match has just kicked off. Jump straight there rather than waiting
+    // out the dwell — the whole point of priority is not making someone wait
+    // to see that something is happening.
+    priorityWasActive_ = true;
+    // An explicit hold is respected even here: the user has said where they
+    // want to be. The footer still shows LIVE, so the match is not hidden.
+    if (!pinned_) {
+      showIndex(priorityIndex_, /*force=*/true);
+      return;
+    }
+    drawFooter();
+  } else if (!priorityActive && priorityWasActive_) {
+    // The match is over — confirmed by the screen no longer reporting data,
+    // not by any clock of ours. Resume normal rotation from wherever we are.
+    priorityWasActive_ = false;
+    shownAt_ = millis();
+    drawFooter();
+  }
+
   // Live content (a match clock, a countdown) refreshes on its own schedule,
   // rate-limited so it cannot monopolise the SPI bus.
   if (screens_[current_]->needsRedraw() &&
@@ -187,7 +228,20 @@ void ScreenManager::tick() {
   }
 
   if (pinned_) return;
-  if (millis() - shownAt_ >= dwellMs_) advance(+1);
+  if (millis() - shownAt_ < dwellMs_) return;
+
+  if (priorityActive) {
+    if (current_ != priorityIndex_) {
+      // Return to the match rather than continuing round the carousel.
+      showIndex(priorityIndex_);
+    } else {
+      // Already on it: stay put instead of advancing.
+      shownAt_ = millis();
+    }
+    return;
+  }
+
+  advance(+1);
 }
 
 }  // namespace ui

@@ -38,10 +38,14 @@ void drawStatBlock(TFT_eSPI& tft, int16_t cx, int16_t cy, const char* label,
   tft.drawString(value, cx, cy + 12, 7);
 }
 
-void drawFormChips(TFT_eSPI& tft, const char* form, int16_t cx, int16_t cy) {
-  if (form == nullptr || form[0] == '\0') return;
+void drawFormChips(TFT_eSPI& tft, const char* form, int16_t cx, int16_t cy,
+                   char provisional) {
+  const uint8_t settled = (form == nullptr) ? 0
+                                            : static_cast<uint8_t>(strlen(form));
+  const uint8_t extra = (provisional != 0) ? 1 : 0;
+  const uint8_t n = settled + extra;
+  if (n == 0) return;
 
-  const uint8_t n = static_cast<uint8_t>(strlen(form));
   constexpr int16_t kChip = 15;  // Square, and just wide enough for Font 1.
   constexpr int16_t kGap  = 3;
 
@@ -49,8 +53,11 @@ void drawFormChips(TFT_eSPI& tft, const char* form, int16_t cx, int16_t cy) {
   int16_t x = cx - total / 2;
 
   for (uint8_t i = 0; i < n; ++i) {
+    const bool isProvisional = (i >= settled);
+    const char result = isProvisional ? provisional : form[i];
+
     uint16_t fill;
-    switch (form[i]) {
+    switch (result) {
       case 'W': fill = colour::kWin;  break;
       case 'D': fill = colour::kDraw; break;
       case 'L': fill = colour::kLoss; break;
@@ -58,15 +65,24 @@ void drawFormChips(TFT_eSPI& tft, const char* form, int16_t cx, int16_t cy) {
     }
     tft.fillRoundRect(x, cy - kChip / 2, kChip, kChip, 3, fill);
 
-    // The most recent result is the last character; outlining it shows which
-    // end is "now" without needing a caption.
-    if (i == n - 1) {
+    if (isProvisional) {
+      // A double accent outline marks a result still in play. Deliberately
+      // different from the "most recent" marker below, so a live scoreline is
+      // never read as a finished one.
+      tft.drawRoundRect(x - 1, cy - kChip / 2 - 1, kChip + 2, kChip + 2, 4,
+                        colour::kAccent);
+      tft.drawRoundRect(x - 2, cy - kChip / 2 - 2, kChip + 4, kChip + 4, 5,
+                        colour::kAccent);
+    } else if (i == settled - 1 && extra == 0) {
+      // Outline the most recent *settled* result, so which end is "now" is
+      // clear without a caption. Skipped when a provisional chip is present,
+      // since that chip is then unambiguously the latest.
       tft.drawRoundRect(x - 1, cy - kChip / 2 - 1, kChip + 2, kChip + 2, 4,
                         colour::kPrimary);
     }
 
     // Black on the bright fills gives better contrast than white would.
-    const char letter[2] = {form[i], '\0'};
+    const char letter[2] = {result, '\0'};
     tft.setTextDatum(MC_DATUM);
     tft.setTextColor(TFT_BLACK, fill);
     tft.drawString(letter, x + kChip / 2, cy, 1);

@@ -303,6 +303,9 @@ void setup() {
   g_screens.add(&g_leagueTable);
   g_screens.add(&g_topScorer);
   g_menu.begin(g_settings);
+  // The live match screen takes priority whenever a match is in progress: the
+  // device returns to it after the dwell rather than continuing the carousel.
+  g_screens.setPriority(&g_liveMatch);
   g_screens.begin(tft, g_data, g_settings.screenDwellMs);
 
   ledSet(false, true, false);  // Green: running.
