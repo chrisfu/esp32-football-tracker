@@ -118,7 +118,23 @@ The full table is 20 rows × 9 columns (Club, MP, W, D, L, GF, GA, GD, Pts) on a
   football-data.org (`BOL`, `WHU`, `QPR`) — no abbreviation logic needed — with
   the full name shown for the highlighted row, so the numeric columns stay
   aligned and readable.
-* The Championship has **24 teams**, so about 3 screens' worth of scrolling.
+* The Championship has **24 teams**, so about 3 screens' worth of scrolling
+  at 8 visible rows.
+
+**Planned: proportional auto-scroll while cycling** (requested; not urgent).
+The table opens centred on our team, which is right, but the rest of the table
+is then never seen by someone who does not touch the device. The idea is to
+pan automatically within the dwell period: from our team's row to the nearer
+end of the table, then across to the far end, with the rate derived from the
+row count and the configured dwell so the whole table is covered exactly once
+however long the dwell is set to. It must pause the moment the screen is
+touched, so a manual scroll is never fought by the animation.
+
+One implementation note for when this is built: at 31 ms per full redraw a
+smooth per-pixel pan is affordable, but redrawing the whole table for every
+pixel of travel would keep the CPU and SPI bus busy continuously, which works
+against the power plan (§9). Stepping a whole row at a time, on a timer derived
+from the dwell, gets the same coverage for a fraction of the work.
 
 ---
 
