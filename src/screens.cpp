@@ -195,7 +195,8 @@ void NextFixtureScreen::draw(TFT_eSPI& tft, const model::Snapshot& d) {
 // ---------------------------------------------------------------------------
 
 uint8_t LeagueTableScreen::visibleRows() {
-  return static_cast<uint8_t>((kContentHeight - kHeaderRowGap) / kRowHeight);
+  return static_cast<uint8_t>((kContentHeight - kHeaderRowGap - kSummaryStrip) /
+                              kRowHeight);
 }
 
 void LeagueTableScreen::onShow(const model::Snapshot& d) {
@@ -237,19 +238,27 @@ bool LeagueTableScreen::handleGesture(touch::Gesture g) {
 }
 
 void LeagueTableScreen::draw(TFT_eSPI& tft, const model::Snapshot& d) {
-  // Column right-edges, tuned against the real club codes and two-digit
-  // figures rather than guessed. Everything is right-aligned so the digits
-  // line up down the table, which is what makes a table scannable.
+  // Column right-edges. All nine columns the brief asks for fit within 320 px:
+  // the numbers need about 238 px of glyphs, so an earlier claim that there
+  // was "no room for a tenth column" was simply a bad layout, not a real
+  // constraint. Everything is right-aligned so digits line up down the table,
+  // which is what makes a table scannable.
   struct Column { const char* label; int16_t right; };
   constexpr Column kCols[] = {
-      {"MP",  148}, {"W", 175}, {"D", 199}, {"L", 223},
-      {"GF",  251}, {"GA", 279}, {"GD", 310},
+      {"MP", 92}, {"W", 116}, {"D", 138}, {"L", 160},
+      {"GF", 190}, {"GA", 218}, {"GD", 252},
   };
-  constexpr int16_t kPosRight = 26;
-  constexpr int16_t kTlaLeft  = 32;
+  constexpr int16_t kPosRight  = 20;
+  constexpr int16_t kTlaLeft   = 26;
+  /// Points sits hard right, separated, and drawn bold — it is the figure a
+  /// reader looks for first, and every other source presents it that way.
+  constexpr int16_t kPtsRight  = 314;
+  constexpr int16_t kPtsDivide = 264;
 
-  // Header row.
   const int16_t headerY = kContentTop + 8;
+  const int16_t rowsTop = kContentTop + kHeaderRowGap;
+
+  // --- Header ------------------------------------------------------------
   tft.setTextDatum(MR_DATUM);
   tft.setTextColor(colour::kMuted, colour::kBackground);
   tft.drawString("#", kPosRight, headerY, 2);
@@ -257,45 +266,49 @@ void LeagueTableScreen::draw(TFT_eSPI& tft, const model::Snapshot& d) {
   tft.drawString("CLUB", kTlaLeft, headerY, 2);
   tft.setTextDatum(MR_DATUM);
   for (const Column& c : kCols) tft.drawString(c.label, c.right, headerY, 2);
-  tft.drawFastHLine(0, kContentTop + kHeaderRowGap - 2, board::kScreenWidth,
-                    colour::kMuted);
+  tft.setTextColor(colour::kPrimary, colour::kBackground);
+  drawBoldString(tft, "PTS", kPtsRight, headerY, 2);
+  tft.drawFastHLine(0, rowsTop - 2, board::kScreenWidth, colour::kMuted);
 
-  // Rows.
+  // --- Rows --------------------------------------------------------------
   const uint8_t visible = visibleRows();
   const uint8_t last = min<uint8_t>(scroll_ + visible, d.tableRows);
   for (uint8_t i = scroll_; i < last; ++i) {
     const model::TableRow& r = d.table[i];
-    const int16_t rowTop =
-        kContentTop + kHeaderRowGap + (i - scroll_) * kRowHeight;
+    const int16_t rowTop = rowsTop + (i - scroll_) * kRowHeight;
     const int16_t cy = rowTop + kRowHeight / 2;
 
     // Banding aids horizontal tracking across eight numeric columns; our own
     // row gets a solid highlight instead.
-    if (r.isOurTeam) {
-      tft.fillRect(0, rowTop, board::kScreenWidth, kRowHeight, 0x3800);
-    } else if ((i & 1) == 0) {
-      tft.fillRect(0, rowTop, board::kScreenWidth, kRowHeight, colour::kRowAlt);
+    const bool banded = ((i & 1) == 0);
+    const uint16_t bg = r.isOurTeam ? 0x3800
+                                    : (banded ? colour::kRowAlt
+                                              : colour::kBackground);
+    if (r.isOurTeam || banded) {
+      tft.fillRect(0, rowTop, board::kScreenWidth, kRowHeight, bg);
     }
 
-    const uint16_t fg = r.isOurTeam ? colour::kOurTeam : colour::kPrimary;
-    const uint16_t bg = r.isOurTeam ? 0x3800
-                                    : ((i & 1) == 0 ? colour::kRowAlt
-                                                    : colour::kBackground);
-    tft.setTextColor(fg, bg);
+    // Numeric columns are drawn slightly muted so the points column carries
+    // the emphasis rather than competing with seven other figures.
+    const uint16_t nameFg = r.isOurTeam ? colour::kOurTeam : colour::kPrimary;
+    const uint16_t numFg  = r.isOurTeam ? colour::kOurTeam : 0xC618;
 
     char buf[8];
     tft.setTextDatum(MR_DATUM);
+    tft.setTextColor(numFg, bg);
     snprintf(buf, sizeof(buf), "%u", r.position);
     tft.drawString(buf, kPosRight, cy, 2);
 
-    // The official three-letter code, so the numeric columns stay aligned.
-    // Supplied by the provider — we deliberately do not invent abbreviations.
+    // The official three-letter code from the provider. We deliberately do not
+    // invent abbreviations of our own.
     tft.setTextDatum(ML_DATUM);
+    tft.setTextColor(nameFg, bg);
     tft.drawString(r.tla, kTlaLeft, cy, 2);
 
     tft.setTextDatum(MR_DATUM);
-    const int16_t values[] = {r.played, r.won,          r.drawn,
-                              r.lost,   r.goalsFor,     r.goalsAgainst};
+    tft.setTextColor(numFg, bg);
+    const int16_t values[] = {r.played, r.won,      r.drawn,
+                              r.lost,   r.goalsFor, r.goalsAgainst};
     for (uint8_t c = 0; c < 6; ++c) {
       snprintf(buf, sizeof(buf), "%d", values[c]);
       tft.drawString(buf, kCols[c].right, cy, 2);
@@ -303,30 +316,38 @@ void LeagueTableScreen::draw(TFT_eSPI& tft, const model::Snapshot& d) {
     // Goal difference carries a sign, which matters at a glance.
     snprintf(buf, sizeof(buf), "%+d", r.goalDifference);
     tft.drawString(buf, kCols[6].right, cy, 2);
+
+    // Points: bold, full brightness, and set apart by the divider.
+    tft.setTextColor(r.isOurTeam ? colour::kOurTeam : colour::kPrimary, bg);
+    snprintf(buf, sizeof(buf), "%u", r.points);
+    drawBoldString(tft, buf, kPtsRight, cy, 2);
   }
 
-  // Points are the column that matters most, so they get their own emphasis
-  // rather than competing with six other numbers... but there is no room at
-  // this row height for a tenth column, so the full name and points of the
-  // highlighted row are shown in the footer strip instead.
+  // Divider ahead of the points column, spanning only the rows drawn so it
+  // does not run into the summary strip.
+  tft.drawFastVLine(kPtsDivide, rowsTop, (last - scroll_) * kRowHeight,
+                    colour::kMuted);
+
+  // --- Summary strip -----------------------------------------------------
+  // Drawn in space reserved by kSummaryStrip. The three-letter codes keep the
+  // table aligned but are terse, so our team's full name is spelled out here.
+  const int16_t summaryY = kContentBottom - kSummaryStrip / 2;
   const model::TableRow* us = d.ourTeam();
   if (us != nullptr) {
-    char line[64];
     char name[model::kNameLen];
     shortenClubName(us->name, name, sizeof(name));
-    snprintf(line, sizeof(line), "%s  -  %u pts", name, us->points);
-    tft.setTextDatum(BL_DATUM);
+    tft.setTextDatum(ML_DATUM);
     tft.setTextColor(colour::kOurTeam, colour::kBackground);
-    tft.drawString(line, 4, kContentBottom - 2, 2);
+    tft.drawString(name, 4, summaryY, 2);
   }
 
   // Scroll position, so it is clear more rows exist off-screen.
   if (d.tableRows > visible) {
     char pos[16];
-    snprintf(pos, sizeof(pos), "%u-%u/%u", scroll_ + 1, last, d.tableRows);
-    tft.setTextDatum(BR_DATUM);
+    snprintf(pos, sizeof(pos), "%u-%u of %u", scroll_ + 1, last, d.tableRows);
+    tft.setTextDatum(MR_DATUM);
     tft.setTextColor(colour::kMuted, colour::kBackground);
-    tft.drawString(pos, board::kScreenWidth - 4, kContentBottom - 2, 2);
+    tft.drawString(pos, board::kScreenWidth - 4, summaryY, 2);
   }
 }
 
@@ -335,21 +356,39 @@ void LeagueTableScreen::draw(TFT_eSPI& tft, const model::Snapshot& d) {
 // ---------------------------------------------------------------------------
 
 void TopScorerScreen::draw(TFT_eSPI& tft, const model::Snapshot& d) {
+  // Prefer our own team's scorers. The league chart is identical for every
+  // user of every device, and a side in the bottom half never appears in it.
+  const bool showingTeam = d.teamScorerCount > 0;
+  const model::Scorer* list =
+      showingTeam ? d.teamScorers : d.leagueScorers;
+  const uint8_t count =
+      showingTeam ? d.teamScorerCount : d.leagueScorerCount;
+
+  // Say whose list this is, so the numbers are never ambiguous — two goals
+  // makes sense as a team-leading tally and nonsense as a league-leading one.
   tft.setTextDatum(TL_DATUM);
-  tft.setTextColor(colour::kMuted, colour::kBackground);
-  tft.drawString("PLAYER", 6, kContentTop + 4, 2);
+  tft.setTextColor(showingTeam ? colour::kOurTeam : colour::kPrimary,
+                   colour::kBackground);
+  tft.drawString(showingTeam ? "OUR SCORERS" : "LEAGUE SCORERS", 6,
+                 kContentTop + 4, 2);
   tft.setTextDatum(TR_DATUM);
-  tft.drawString("GLS", board::kScreenWidth - 6, kContentTop + 4, 2);
+  tft.setTextColor(colour::kMuted, colour::kBackground);
+  tft.drawString("GLS", board::kScreenWidth - 8, kContentTop + 4, 2);
   tft.drawFastHLine(0, kContentTop + 22, board::kScreenWidth, colour::kMuted);
 
-  constexpr int16_t kRowHeight = 34;
-  for (uint8_t i = 0; i < d.scorerCount; ++i) {
-    const model::Scorer& s = d.scorers[i];
-    const int16_t rowTop = kContentTop + 26 + i * kRowHeight;
-    if (rowTop + kRowHeight > kContentBottom) break;
-    const int16_t cy = rowTop + kRowHeight / 2 - 4;
+  // Reserve a strip at the bottom for the league-leader context line, so rows
+  // cannot grow into it.
+  constexpr int16_t kContextStrip = 20;
+  constexpr int16_t kRowHeight    = 32;
+  const int16_t rowsTop    = kContentTop + 26;
+  const int16_t rowsBottom = kContentBottom - kContextStrip;
 
-    // Rank, then name, then goals in a large face on the right.
+  for (uint8_t i = 0; i < count; ++i) {
+    const model::Scorer& sc = list[i];
+    const int16_t rowTop = rowsTop + i * kRowHeight;
+    if (rowTop + kRowHeight > rowsBottom) break;  // Out of room; stop cleanly.
+    const int16_t cy = rowTop + kRowHeight / 2 - 2;
+
     char rank[6];
     snprintf(rank, sizeof(rank), "%u", i + 1);
     tft.setTextDatum(ML_DATUM);
@@ -357,18 +396,36 @@ void TopScorerScreen::draw(TFT_eSPI& tft, const model::Snapshot& d) {
     tft.drawString(rank, 6, cy, 4);
 
     tft.setTextColor(colour::kPrimary, colour::kBackground);
-    tft.drawString(s.name, 28, cy - 6, 2);
+    tft.drawString(sc.name, 28, cy - 6, 2);
 
+    // When showing our own team the club code is the same on every row, so it
+    // is dropped in favour of the appearance count alone.
     char sub[32];
-    snprintf(sub, sizeof(sub), "%s  -  %u apps", s.tla, s.played);
+    if (showingTeam) {
+      snprintf(sub, sizeof(sub), "%u appearances", sc.played);
+    } else {
+      snprintf(sub, sizeof(sub), "%s  -  %u apps", sc.tla, sc.played);
+    }
     tft.setTextColor(colour::kMuted, colour::kBackground);
     tft.drawString(sub, 28, cy + 10, 2);
 
     char goals[6];
-    snprintf(goals, sizeof(goals), "%u", s.goals);
+    snprintf(goals, sizeof(goals), "%u", sc.goals);
     tft.setTextDatum(MR_DATUM);
     tft.setTextColor(colour::kAccent, colour::kBackground);
     tft.drawString(goals, board::kScreenWidth - 8, cy, 7);
+  }
+
+  // League leader as context. Only worth showing alongside our own list; it
+  // would be a redundant restatement of row one otherwise.
+  if (showingTeam && d.leagueScorerCount > 0) {
+    const model::Scorer& top = d.leagueScorers[0];
+    char line[64];
+    snprintf(line, sizeof(line), "League: %s (%s) %u", top.name, top.tla,
+             top.goals);
+    tft.setTextDatum(ML_DATUM);
+    tft.setTextColor(colour::kMuted, colour::kBackground);
+    tft.drawString(line, 6, kContentBottom - kContextStrip / 2, 2);
   }
 }
 

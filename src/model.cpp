@@ -78,10 +78,19 @@ struct SeedScorer {
   uint8_t     played;
 };
 
-constexpr SeedScorer kSeedScorers[] = {
+constexpr SeedScorer kSeedLeagueScorers[] = {
     {"William Lankshear", "MID", 5, 5},
     {"Cyle Larin",        "SOU", 5, 6},
     {"Ethan Galbraith",   "STK", 4, 6},
+};
+
+/// Bolton's scorers, filtered from the same /scorers?limit=100 response.
+/// Real values: nobody at the foot of the table reaches the league top ten,
+/// which is exactly why the wider request is needed.
+constexpr SeedScorer kSeedTeamScorers[] = {
+    {"Sam Dalby",      "BOL", 2, 6},
+    {"Thierry Gale",   "BOL", 1, 6},
+    {"Xavier Simons",  "BOL", 1, 3},
 };
 
 }  // namespace
@@ -163,18 +172,28 @@ void loadPlaceholder(Snapshot& out) {
   }
 
   // --- Top scorers --------------------------------------------------------
-  constexpr uint8_t kSeedScorerCount =
-      sizeof(kSeedScorers) / sizeof(kSeedScorers[0]);
-  static_assert(kSeedScorerCount <= Snapshot::kMaxScorers,
-                "seed scorers exceed Snapshot capacity");
-  const uint8_t scorers = kSeedScorerCount;
-  for (uint8_t i = 0; i < scorers; ++i) {
-    setField(out.scorers[i].name, kSeedScorers[i].name);
-    setField(out.scorers[i].tla, kSeedScorers[i].tla);
-    out.scorers[i].goals  = kSeedScorers[i].goals;
-    out.scorers[i].played = kSeedScorers[i].played;
-  }
-  out.scorerCount = scorers;
+  const auto copyScorers = [](const SeedScorer* src, uint8_t n, Scorer* dst) {
+    for (uint8_t i = 0; i < n; ++i) {
+      setField(dst[i].name, src[i].name);
+      setField(dst[i].tla, src[i].tla);
+      dst[i].goals  = src[i].goals;
+      dst[i].played = src[i].played;
+    }
+  };
+
+  constexpr uint8_t kLeagueCount =
+      sizeof(kSeedLeagueScorers) / sizeof(kSeedLeagueScorers[0]);
+  constexpr uint8_t kTeamCount =
+      sizeof(kSeedTeamScorers) / sizeof(kSeedTeamScorers[0]);
+  static_assert(kLeagueCount <= Snapshot::kMaxScorers,
+                "seed league scorers exceed Snapshot capacity");
+  static_assert(kTeamCount <= Snapshot::kMaxScorers,
+                "seed team scorers exceed Snapshot capacity");
+
+  copyScorers(kSeedLeagueScorers, kLeagueCount, out.leagueScorers);
+  out.leagueScorerCount = kLeagueCount;
+  copyScorers(kSeedTeamScorers, kTeamCount, out.teamScorers);
+  out.teamScorerCount = kTeamCount;
 }
 
 }  // namespace model

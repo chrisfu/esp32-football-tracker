@@ -64,9 +64,19 @@ class LeagueTableScreen : public Screen {
   /// Opens centred on our team rather than at the top of the table.
   void onShow(const model::Snapshot& d) override;
 
-  /// Rows visible at once, given the row height and content area.
   static constexpr uint8_t kRowHeight    = 19;
+  /// Vertical space taken by the column-header row.
   static constexpr uint8_t kHeaderRowGap = 18;
+  /**
+   * Space reserved at the bottom for the summary line.
+   *
+   * Explicitly reserved because it was not, originally: rows filled the
+   * content area down to y=215 while the summary's baseline sat at 216 and its
+   * glyphs extended upward, overlapping the final row.
+   */
+  static constexpr uint8_t kSummaryStrip = 18;
+
+  /// Rows visible at once, given the row height and the reserved strips.
   static uint8_t visibleRows();
 
  private:
@@ -74,12 +84,19 @@ class LeagueTableScreen : public Screen {
   uint8_t rowCount_  = 0;
 };
 
-/// Top scorers in the competition.
+/**
+ * Top scorers — our own team's by preference, the league's as a fallback.
+ *
+ * Our team's scorers are the more interesting view: the league chart is the
+ * same for everyone and rarely features a side in the bottom half. The league
+ * leader is still shown as a single line of context, since both lists come
+ * from one request and it costs nothing to display.
+ */
 class TopScorerScreen : public Screen {
  public:
   const char* title() const override { return "Scorers"; }
   bool hasData(const model::Snapshot& d) const override {
-    return d.scorerCount > 0;
+    return d.teamScorerCount > 0 || d.leagueScorerCount > 0;
   }
   void draw(TFT_eSPI& tft, const model::Snapshot& d) override;
 };
