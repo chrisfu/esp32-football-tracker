@@ -340,12 +340,29 @@ void loadSettings(Settings& out) {
     return;
   }
 
-  p.getString("ssid", out.wifiSsid, sizeof(out.wifiSsid));
-  p.getString("pass", out.wifiPass, sizeof(out.wifiPass));
-  p.getString("apisKey", out.apiSportsKey, sizeof(out.apiSportsKey));
-  p.getString("fdKey", out.footballDataKey, sizeof(out.footballDataKey));
-  p.getString("comp", out.competitionCode, sizeof(out.competitionCode));
-  p.getString("teamName", out.teamDisplayName, sizeof(out.teamDisplayName));
+  // Only overwrite a field when NVS actually holds something for it.
+  // getString() writes an empty string for a missing key, which would
+  // otherwise wipe the compiled-in defaults (notably the API keys) on a device
+  // that has saved Wi-Fi credentials but nothing else.
+  //
+  // Read into a temporary first. Preferences::getString(key, dest, len) writes
+  // into dest *before* returning the length, so testing its return value is
+  // too late — an empty stored value has already overwritten the default by
+  // then. This is exactly how the API keys were silently blanked on a device
+  // that had saved Wi-Fi credentials while the key fields were still empty.
+  const auto loadStr = [&p](const char* key, char* dest, size_t len) {
+    if (!p.isKey(key)) return;
+    const String value = p.getString(key, "");
+    if (value.length() == 0) return;
+    strncpy(dest, value.c_str(), len - 1);
+    dest[len - 1] = '\0';
+  };
+  loadStr("ssid", out.wifiSsid, sizeof(out.wifiSsid));
+  loadStr("pass", out.wifiPass, sizeof(out.wifiPass));
+  loadStr("apisKey", out.apiSportsKey, sizeof(out.apiSportsKey));
+  loadStr("fdKey", out.footballDataKey, sizeof(out.footballDataKey));
+  loadStr("comp", out.competitionCode, sizeof(out.competitionCode));
+  loadStr("teamName", out.teamDisplayName, sizeof(out.teamDisplayName));
 
   out.apiSportsTeamId    = p.getUShort("apisTeam", out.apiSportsTeamId);
   out.footballDataTeamId = p.getUShort("fdTeam", out.footballDataTeamId);

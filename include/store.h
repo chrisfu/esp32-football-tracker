@@ -24,6 +24,19 @@
 
 #include "touch_input.h"
 
+// Optional build-time key provisioning. Absent by default; see
+// include/secrets_example.h. Only ever supplies *defaults* — anything entered
+// through the web interface is stored in NVS and takes precedence.
+#if __has_include("secrets.h")
+#include "secrets.h"
+#endif
+#ifndef SECRET_FOOTBALL_DATA_KEY
+#define SECRET_FOOTBALL_DATA_KEY ""
+#endif
+#ifndef SECRET_API_SPORTS_KEY
+#define SECRET_API_SPORTS_KEY ""
+#endif
+
 namespace store {
 
 // ---------------------------------------------------------------------------
@@ -121,8 +134,8 @@ struct Settings {
   char wifiSsid[kSsidLen] = {0};
   char wifiPass[kPassLen] = {0};
 
-  char apiSportsKey[kKeyLen]    = {0};
-  char footballDataKey[kKeyLen] = {0};
+  char apiSportsKey[kKeyLen]    = SECRET_API_SPORTS_KEY;
+  char footballDataKey[kKeyLen] = SECRET_FOOTBALL_DATA_KEY;
 
   /// Provider-qualified, because the two disagree: Bolton is 68 on api-sports
   /// and 60 on football-data, where 68 is Norwich City. A single `teamId`
