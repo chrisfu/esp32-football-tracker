@@ -316,6 +316,26 @@ Solution, applied to every endpoint:
 This is the single most important implementation detail in the project. It is
 what makes a no-PSRAM board viable against this API.
 
+### Measured cache reduction
+
+Filtering before storing is not a marginal saving. Observed on hardware:
+
+| Document | Response | Stored |
+|---|---|---|
+| League table | 6,728 B | 4,100 B |
+| Our matches | 6,269 B | 1,637 B |
+| Next fixture | 3,087 B | 822 B |
+| **Top scorers** | **62,044 B** | **11,165 B** |
+
+The whole cache is about 18 KB of the 1408 KB filesystem. The scorers response
+is the one that proves the approach: 62 KB streamed through a filter on a board
+whose largest contiguous heap block is 110 KB, with heap steady at 174 KB
+throughout and back to 224 KB afterwards.
+
+**A reboot costs zero API calls.** The cache repopulates the screens before the
+radio has even associated, and the schedule is then aligned to the cached
+timestamps so nothing still inside its TTL is re-requested.
+
 ### Cache format — as built
 
 One file per data type under `/cache/`, plus a single shared metadata file:
@@ -848,8 +868,9 @@ Each item is one branch, per R1.
 * [x] On-device settings menu — long press, device info, how-to-use, guarded
       Wi-Fi and factory resets
 * [ ] Web interface settings pages — team, screens, dwell, brightness, cache
-* [ ] Provider abstraction + football-data.org client (table, fixtures, scorers)
-* [ ] api-sports client — streaming parse, filters, budget enforcement
+* [x] Provider abstraction + football-data.org client (table, fixtures, scorers)
+* [x] api-sports client — streaming parse, filters, budget enforcement
+* [x] Cache persistence — a reboot costs zero API calls
 * [x] Live match screen — event columns, priority lock-back, provisional form
 * [ ] The six screens wired to real data
 * [ ] Live match polling with adaptive scheduling

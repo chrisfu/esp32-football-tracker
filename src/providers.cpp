@@ -117,6 +117,75 @@ uint32_t parseIso8601(const char* iso) {
 // League table
 // ---------------------------------------------------------------------------
 
+namespace {
+
+/// Map a parsed standings document into the model. Shared by the network and
+/// cache paths, so a cached document can never diverge from a fresh one.
+void parseStandings(const JsonDocument& doc, model::Snapshot& out) {
+  setField(out.competitionName, doc["competition"]["name"] | "");
+  out.matchday = doc["season"]["currentMatchday"] | 0;
+
+  uint8_t written = 0;
+  out.ourRow = 0xFF;
+  for (JsonObjectConst t : doc["standings"].as<JsonArrayConst>()) {
+    // Only the TOTAL table; the API also returns HOME and AWAY splits.
+    if (strcmp(t["type"] | "", "TOTAL") != 0) continue;
+    for (JsonObjectConst e : t["table"].as<JsonArrayConst>()) {
+      if (written >= model::Snapshot::kMaxTableRows) break;
+      model::TableRow& dst = out.table[written];
+      setField(dst.tla, e["team"]["tla"] | "");
+      setField(dst.name, e["team"]["name"] | "");
+      dst.position       = e["position"] | 0;
+      dst.played         = e["playedGames"] | 0;
+      dst.won            = e["won"] | 0;
+      dst.drawn          = e["draw"] | 0;
+      dst.lost           = e["lost"] | 0;
+      dst.goalsFor       = e["goalsFor"] | 0;
+      dst.goalsAgainst   = e["goalsAgainst"] | 0;
+      dst.goalDifference = e["goalDifference"] | 0;
+      dst.points         = e["points"] | 0;
+      dst.isOurTeam = (g_settings != nullptr) &&
+                      strstr(dst.name, g_settings->teamDisplayName) != nullptr;
+      if (dst.isOurTeam) out.ourRow = written;
+      ++written;
+    }
+    break;
+  }
+  out.tableRows = written;
+}
+
+void parseOurMatchesImpl(const JsonDocument& doc, model::Snapshot& out);
+void parseNextFixtureImpl(const JsonDocument& doc, model::Snapshot& out);
+void parseScorersImpl(const JsonDocument& doc, model::Snapshot& out);
+
+}  // namespace
+
+// Wrappers giving the shared parsers external linkage with stable names, so
+// both the network path and the cache path call exactly the same code. That
+// equivalence is the point: a cached document can never render differently
+// from a freshly fetched one.
+static void parseOurMatches(const JsonDocument& d, model::Snapshot& o) {
+  parseOurMatchesImpl(d, o);
+}
+static void parseNextFixture(const JsonDocument& d, model::Snapshot& o) {
+  parseNextFixtureImpl(d, o);
+}
+static void parseScorers(const JsonDocument& d, model::Snapshot& o) {
+  parseScorersImpl(d, o);
+}
+static void parseStandingsShared(const JsonDocument& d, model::Snapshot& o) {
+  parseStandings(d, o);
+}
+static void parseOurMatchesShared(const JsonDocument& d, model::Snapshot& o) {
+  parseOurMatchesImpl(d, o);
+}
+static void parseNextFixtureShared(const JsonDocument& d, model::Snapshot& o) {
+  parseNextFixtureImpl(d, o);
+}
+static void parseScorersShared(const JsonDocument& d, model::Snapshot& o) {
+  parseScorersImpl(d, o);
+}
+
 api::Result fetchStandings(model::Snapshot& out) {
   // The filter is the whole trick: of a response listing every team with
   // nested objects, only these leaves are ever materialised.
@@ -145,39 +214,8 @@ api::Result fetchStandings(model::Snapshot& out) {
       api::fetch(api::Provider::FootballData, path, doc, filter);
   if (!r.ok()) return r.result;
 
-  setField(out.competitionName, doc["competition"]["name"] | "");
-  out.matchday = doc["season"]["currentMatchday"] | 0;
-
-  // Only the TOTAL table; the API also returns HOME and AWAY splits.
-  JsonArrayConst tables = doc["standings"];
-  uint8_t written = 0;
-  out.ourRow = 0xFF;
-  for (JsonObjectConst t : tables) {
-    if (strcmp(t["type"] | "", "TOTAL") != 0) continue;
-    for (JsonObjectConst e : t["table"].as<JsonArrayConst>()) {
-      if (written >= model::Snapshot::kMaxTableRows) break;
-      model::TableRow& dst = out.table[written];
-      setField(dst.tla, e["team"]["tla"] | "");
-      setField(dst.name, e["team"]["name"] | "");
-      dst.position       = e["position"] | 0;
-      dst.played         = e["playedGames"] | 0;
-      dst.won            = e["won"] | 0;
-      dst.drawn          = e["draw"] | 0;
-      dst.lost           = e["lost"] | 0;
-      dst.goalsFor       = e["goalsFor"] | 0;
-      dst.goalsAgainst   = e["goalsAgainst"] | 0;
-      dst.goalDifference = e["goalDifference"] | 0;
-      dst.points         = e["points"] | 0;
-      // Matched on the three-letter code rather than the id, because the
-      // standings row's team object is filtered down to tla and name.
-      dst.isOurTeam = (g_settings != nullptr) &&
-                      strstr(dst.name, g_settings->teamDisplayName) != nullptr;
-      if (dst.isOurTeam) out.ourRow = written;
-      ++written;
-    }
-    break;
-  }
-  out.tableRows = written;
+  parseStandings(doc, out);
+  api::persist(store::Doc::Standings, doc, 6 * 3600);
   Serial.printf("[prov] standings: %u rows, our row %u\n", out.tableRows,
                 out.ourRow);
   return api::Result::Ok;
@@ -221,8 +259,21 @@ api::Result fetchOurMatches(model::Snapshot& out) {
       api::fetch(api::Provider::FootballData, path, doc, filter);
   if (!r.ok()) return r.result;
 
+  parseOurMatches(doc, out);
+  api::persist(store::Doc::TeamMatches, doc, 6 * 3600);
+  Serial.printf("[prov] our matches: form \"%s\", last %s %d-%d\n",
+                out.lastResult.weAreHome ? out.lastResult.homeForm
+                                         : out.lastResult.awayForm,
+                out.lastResult.homeTla, out.lastResult.homeGoals,
+                out.lastResult.awayGoals);
+  return api::Result::Ok;
+}
+
+namespace {
+
+void parseOurMatchesImpl(const JsonDocument& doc, model::Snapshot& out) {
   JsonArrayConst matches = doc["matches"];
-  if (matches.size() == 0) return api::Result::Ok;  // Season not started.
+  if (matches.size() == 0) return;  // Season not started.
 
   // Oldest first, so the most recent is last.
   char form[model::kFormLen] = {0};
@@ -259,11 +310,9 @@ api::Result fetchOurMatches(model::Snapshot& out) {
                form);
     }
   }
-  Serial.printf("[prov] our matches: form \"%s\", last %s %d-%d\n", form,
-                out.lastResult.homeTla, out.lastResult.homeGoals,
-                out.lastResult.awayGoals);
-  return api::Result::Ok;
 }
+
+}  // namespace
 
 // ---------------------------------------------------------------------------
 // Next fixture
@@ -282,6 +331,14 @@ api::Result fetchNextFixture(model::Snapshot& out) {
       api::fetch(api::Provider::FootballData, path, doc, filter);
   if (!r.ok()) return r.result;
 
+  parseNextFixture(doc, out);
+  api::persist(store::Doc::OpponentMatches, doc, 12 * 3600);
+  return api::Result::Ok;
+}
+
+namespace {
+
+void parseNextFixtureImpl(const JsonDocument& doc, model::Snapshot& out) {
   const uint32_t liveKickoff =
       out.liveActive ? out.live.fixture.kickoffUtc : 0;
 
@@ -292,13 +349,24 @@ api::Result fetchNextFixture(model::Snapshot& out) {
     // kick-off rather than id because the two providers number fixtures
     // differently and only the time is common to both.
     if (liveKickoff != 0 && f.kickoffUtc == liveKickoff) continue;
+    // Preserve any form already derived for our side.
+    char ourForm[model::kFormLen];
+    strncpy(ourForm,
+            out.nextFixture.weAreHome ? out.nextFixture.homeForm
+                                      : out.nextFixture.awayForm,
+            sizeof(ourForm));
+    ourForm[sizeof(ourForm) - 1] = '\0';
     out.nextFixture = f;
+    setField(out.nextFixture.weAreHome ? out.nextFixture.homeForm
+                                       : out.nextFixture.awayForm,
+             ourForm);
     Serial.printf("[prov] next: %s v %s md%u\n", f.homeTla, f.awayTla,
                   f.matchday);
-    return api::Result::Ok;
+    return;
   }
-  return api::Result::Ok;
 }
+
+}  // namespace
 
 // ---------------------------------------------------------------------------
 // Opponent form
@@ -351,6 +419,16 @@ api::Result fetchScorers(model::Snapshot& out) {
       api::fetch(api::Provider::FootballData, path, doc, filter);
   if (!r.ok()) return r.result;
 
+  parseScorers(doc, out);
+  api::persist(store::Doc::Scorers, doc, 24 * 3600);
+  Serial.printf("[prov] scorers: %u league, %u ours\n", out.leagueScorerCount,
+                out.teamScorerCount);
+  return api::Result::Ok;
+}
+
+namespace {
+
+void parseScorersImpl(const JsonDocument& doc, model::Snapshot& out) {
   out.leagueScorerCount = 0;
   out.teamScorerCount   = 0;
   const char* ourName =
@@ -380,10 +458,9 @@ api::Result fetchScorers(model::Snapshot& out) {
       t.played = e["playedMatches"] | 0;
     }
   }
-  Serial.printf("[prov] scorers: %u league, %u ours\n", out.leagueScorerCount,
-                out.teamScorerCount);
-  return api::Result::Ok;
 }
+
+}  // namespace
 
 // ---------------------------------------------------------------------------
 // Live match
@@ -487,6 +564,75 @@ api::Result fetchLiveMatch(model::Snapshot& out) {
 
   Serial.println(F("[prov] no live match for our team"));
   return api::Result::Ok;
+}
+
+// ---------------------------------------------------------------------------
+// Cache restore
+// ---------------------------------------------------------------------------
+
+bool cacheIsFresh(store::Doc doc) {
+  return store::statusOf(doc).fresh;
+}
+
+namespace {
+
+/// Read one cached document and hand it to a parser.
+///
+/// The buffer is sized from the file itself rather than fixed, so a document
+/// growing (a longer scorers list, say) cannot silently start failing.
+bool restore(store::Doc doc, model::Snapshot& out,
+             void (*parse)(const JsonDocument&, model::Snapshot&)) {
+  const store::DocStatus st = store::statusOf(doc);
+  if (!st.present || st.size == 0) return false;
+
+  char* buffer = static_cast<char*>(malloc(st.size + 1));
+  if (buffer == nullptr) {
+    Serial.printf("[prov] cannot allocate %lu bytes for cached %s\n",
+                  (unsigned long)(st.size + 1), store::docName(doc));
+    return false;
+  }
+  const size_t read = store::readDoc(doc, buffer, st.size + 1);
+  bool ok = false;
+  if (read > 0) {
+    JsonDocument parsed;
+    // No filter: what was written was already filtered, which is the point of
+    // storing the reduced document rather than the response.
+    const DeserializationError err = deserializeJson(parsed, buffer, read);
+    if (err) {
+      // A cached document that will not parse is worse than none: delete it so
+      // the next fetch replaces it instead of failing here on every boot.
+      Serial.printf("[prov] cached %s unparseable (%s) -- discarding\n",
+                    store::docName(doc), err.c_str());
+      store::clearDoc(doc);
+    } else {
+      parse(parsed, out);
+      ok = true;
+    }
+  }
+  free(buffer);
+  return ok;
+}
+
+}  // namespace
+
+uint8_t loadFromCache(model::Snapshot& out) {
+  uint8_t restored = 0;
+  // Order matters: standings first so the table and our row exist, then the
+  // fixtures, which want our form attached to the right side.
+  if (restore(store::Doc::Standings, out, parseStandingsShared)) ++restored;
+  if (restore(store::Doc::TeamMatches, out, parseOurMatchesShared)) ++restored;
+  if (restore(store::Doc::OpponentMatches, out, parseNextFixtureShared)) {
+    ++restored;
+  }
+  if (restore(store::Doc::Scorers, out, parseScorersShared)) ++restored;
+
+  if (restored > 0) {
+    Serial.printf("[prov] restored %u cached documents, no API calls spent\n",
+                  restored);
+  } else {
+    Serial.println(F("[prov] no usable cache; will fetch"));
+  }
+  return restored;
 }
 
 }  // namespace providers

@@ -286,6 +286,27 @@ const char* resultName(Result r) {
   }
 }
 
+bool persist(store::Doc doc, const JsonDocument& parsed,
+             uint32_t ttlSeconds) {
+  const size_t needed = measureJson(parsed);
+  if (needed == 0) return false;
+
+  // Serialised into a temporary buffer rather than straight to a file, because
+  // the store writes atomically (temp file then rename) and needs the whole
+  // payload to do that. Filtered documents are a few kilobytes, so this is
+  // affordable — it is only the *unfiltered* responses that never fit.
+  char* buffer = static_cast<char*>(malloc(needed + 1));
+  if (buffer == nullptr) {
+    Serial.printf("[api] cannot allocate %u bytes to cache %s\n",
+                  (unsigned)(needed + 1), store::docName(doc));
+    return false;
+  }
+  const size_t written = serializeJson(parsed, buffer, needed + 1);
+  const bool ok = store::writeDoc(doc, buffer, written, ttlSeconds);
+  free(buffer);
+  return ok;
+}
+
 void begin(const char* apiSportsKey, const char* footballDataKey) {
   g_apiSportsKey    = apiSportsKey;
   g_footballDataKey = footballDataKey;

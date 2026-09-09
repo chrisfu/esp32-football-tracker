@@ -64,6 +64,9 @@ Task g_tasks[] = {
 };
 constexpr uint8_t kTaskCount = sizeof(g_tasks) / sizeof(g_tasks[0]);
 
+/// Whether the schedule has been aligned to the cache's timestamps yet.
+bool g_seededFromCache = false;
+
 uint32_t g_lastLiveFetchAt = 0;
 uint32_t g_lastGoalSeenAt  = 0;
 uint8_t  g_lastGoalTotal   = 0;
@@ -171,6 +174,40 @@ bool runDue(uint32_t now) {
   return fetched;
 }
 
+/**
+ * Align the schedule with what the cache already holds.
+ *
+ * A document still inside its TTL is treated as though it had just been
+ * fetched, so it is not requested again. This is what makes a reboot cost
+ * nothing: without it the cache would still populate the screens, but every
+ * endpoint would be re-fetched moments later anyway, which rather defeats the
+ * point of having one.
+ *
+ * Requires a valid clock, hence being called from the fetch task rather than
+ * from begin().
+ */
+void seedScheduleFromCache(uint32_t now) {
+  static const store::Doc kDocs[kTaskCount] = {
+      store::Doc::Standings, store::Doc::TeamMatches,
+      store::Doc::OpponentMatches, store::Doc::Scorers};
+
+  for (uint8_t i = 0; i < kTaskCount; ++i) {
+    const store::DocStatus st = store::statusOf(kDocs[i]);
+    if (!st.present || st.fetchedAt == 0) continue;
+    // Guard against a timestamp from the future, which would otherwise defer
+    // a fetch indefinitely — possible if the clock was wrong when it was
+    // written, or the device moved timezone-agnostic data between builds.
+    if (st.fetchedAt > now) continue;
+    const uint32_t age = now - st.fetchedAt;
+    if (age >= g_tasks[i].intervalS) continue;  // Genuinely due.
+
+    g_tasks[i].lastOkAt = st.fetchedAt;
+    Serial.printf("[refresh] %s cached %lus ago; next in %lus\n",
+                  g_tasks[i].name, (unsigned long)age,
+                  (unsigned long)(g_tasks[i].intervalS - age));
+  }
+}
+
 void fetchTask(void*) {
   for (;;) {
     // Only work when there is somewhere to put the result. If the UI has not
@@ -191,6 +228,11 @@ void fetchTask(void*) {
       continue;
     }
 
+    if (!g_seededFromCache) {
+      g_seededFromCache = true;
+      seedScheduleFromCache(now);
+    }
+
     if (runDue(now)) {
       g_ready = true;
       if (!g_primed) g_primed = true;
@@ -207,6 +249,22 @@ void begin(const store::Settings& settings, const model::Snapshot& initial) {
 
   api::begin(settings.apiSportsKey, settings.footballDataKey);
   providers::begin(settings);
+
+  // Restore whatever the cache holds before any fetching. Two benefits: the
+  // screens show real data almost immediately rather than after six seconds
+  // per endpoint, and a restart costs nothing against the daily quota.
+  if (providers::loadFromCache(g_staging) > 0) {
+    g_ready  = true;   // Hand it to the UI at once.
+    g_primed = true;
+  }
+
+  // Seeding the schedule from the cache is deliberately NOT done here. This
+  // runs before NTP has completed, so there is no clock to judge freshness
+  // against — an earlier version checked here, always saw an unset clock, and
+  // therefore re-fetched everything on every reboot despite a perfectly good
+  // cache. It is done on the fetch task's first pass with a valid clock
+  // instead; see seedScheduleFromCache().
+
 
   // A TLS handshake is several seconds of solid computation on this chip, and
   // it happens inside mbedTLS where we cannot yield. With core 0's idle task

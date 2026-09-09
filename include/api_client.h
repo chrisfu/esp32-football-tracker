@@ -18,6 +18,8 @@
 #include <ArduinoJson.h>
 #include <stdint.h>
 
+#include "store.h"
+
 namespace api {
 
 /// Which provider a request goes to. They differ in host, auth header and
@@ -73,6 +75,16 @@ void begin(const char* apiSportsKey, const char* footballDataKey);
  */
 Response fetch(Provider provider, const char* path, JsonDocument& doc,
                JsonDocument& filter);
+
+/**
+ * Serialise an already-filtered document to the cache.
+ *
+ * Kept separate from fetch() so the caller decides what is worth persisting,
+ * and so the same document can be parsed once and stored once. What is written
+ * is the *filtered* result, not the response — a 62 KB scorers reply reduces to
+ * a couple of kilobytes on disk, which is rule R3 in practice.
+ */
+bool persist(store::Doc doc, const JsonDocument& parsed, uint32_t ttlSeconds);
 
 /**
  * Whether a request to this provider can be afforded right now.

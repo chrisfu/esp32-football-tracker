@@ -54,6 +54,21 @@ api::Result fetchScorers(model::Snapshot& out);
  */
 api::Result fetchLiveMatch(model::Snapshot& out);
 
+/**
+ * Populate the snapshot from cached documents, spending no API calls.
+ *
+ * Called at boot so the device shows real data within a second of starting up
+ * instead of waiting six seconds per endpoint — and so a restart, which on a
+ * mains-powered device may happen for any number of dull reasons, costs
+ * nothing against the daily quota.
+ *
+ * @return the number of documents successfully restored.
+ */
+uint8_t loadFromCache(model::Snapshot& out);
+
+/// Whether a cached document is still within its TTL.
+bool cacheIsFresh(store::Doc doc);
+
 /// Parse an ISO-8601 UTC timestamp ("2026-09-12T11:30:00Z") to Unix seconds.
 /// Returns 0 if it cannot be parsed.
 uint32_t parseIso8601(const char* iso);
