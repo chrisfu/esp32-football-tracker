@@ -107,8 +107,22 @@ struct Snapshot {
   LiveMatch live;
   bool      liveActive = false;
 
-  Scorer  scorers[kMaxScorers];
-  uint8_t scorerCount = 0;
+  /// Top scorers across the whole competition.
+  Scorer  leagueScorers[kMaxScorers];
+  uint8_t leagueScorerCount = 0;
+
+  /**
+   * Our own team's scorers.
+   *
+   * Obtained from the same single request as the league list: asking for
+   * `?limit=100` returns everyone who has scored at all (the list bottoms out
+   * at one goal), so our players are filtered out of that response locally.
+   * One request serves both views — and our team's scorers would otherwise
+   * never appear, since a side near the foot of the table has nobody in the
+   * league top ten.
+   */
+  Scorer  teamScorers[kMaxScorers];
+  uint8_t teamScorerCount = 0;
 
   char competitionName[kCompLen] = {0};
   /// Season's current matchday, for context on the table screen.

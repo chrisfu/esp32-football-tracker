@@ -10,6 +10,15 @@
 
 namespace ui {
 
+int16_t drawBoldString(TFT_eSPI& tft, const char* text, int16_t x, int16_t y,
+                       uint8_t font) {
+  const int16_t w = tft.drawString(text, x, y, font);
+  // Second pass one pixel across thickens the strokes. Drawn in the same
+  // colours, so it works with whatever the caller has set.
+  tft.drawString(text, x + 1, y, font);
+  return w + 1;
+}
+
 void drawStatBlock(TFT_eSPI& tft, int16_t cx, int16_t cy, const char* label,
                    const char* value, uint16_t valueColour) {
   tft.setTextDatum(MC_DATUM);

@@ -94,6 +94,19 @@ class Screen {
 // Small drawing helpers, shared so screens stay consistent
 // ---------------------------------------------------------------------------
 
+/**
+ * Draw text in a heavier weight than the font provides.
+ *
+ * TFT_eSPI's bitmap fonts have no bold variant, so this overdraws with a
+ * one-pixel horizontal offset. Cheap, and enough to make a column carry visual
+ * weight against its neighbours — which matters for the points column, the one
+ * figure a reader looks for first.
+ *
+ * @return the width drawn, matching drawString's return.
+ */
+int16_t drawBoldString(TFT_eSPI& tft, const char* text, int16_t x, int16_t y,
+                       uint8_t font);
+
 /// Centred label above a large value — the layout most screens use.
 void drawStatBlock(TFT_eSPI& tft, int16_t cx, int16_t cy, const char* label,
                    const char* value, uint16_t valueColour);

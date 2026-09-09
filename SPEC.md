@@ -100,7 +100,7 @@ the rotation rather than shown empty.
 | 3 | **Last result** | football-data `teams/{id}/matches` | Opponent, score, competition, date |
 | 4 | **Next fixture** | football-data `teams/{id}/matches` | Opponent, competition, kick-off local time, live countdown |
 | 5 | **League table** | football-data `standings` | Scrollable — see below |
-| 6 | **Top scorer** | football-data `scorers` | Goals, appearances; league-wide and our team's best |
+| 6 | **Top scorer** | football-data `scorers` | **Our team's scorers**, with the league leader as context (§4.6) |
 | 7 | ~~Injuries~~ | — | **Deferred** — unavailable on either free tier (§6) |
 
 ### 4.5 League table rendering
@@ -121,6 +121,57 @@ The full table is 20 rows × 9 columns (Club, MP, W, D, L, GF, GA, GD, Pts) on a
 * The Championship has **24 teams**, so about 3 screens' worth of scrolling.
 
 ---
+
+### 4.6 Top scorers — our team, not just the league
+
+The league scoring chart is identical for every user of every device, and a
+side in the bottom half never appears in it. Our own team's scorers are the
+interesting view.
+
+**Verified achievable on the free tier.** `/competitions/ELC/scorers?limit=100`
+returns 100 entries — the list bottoms out at a single goal, so *everyone who
+has scored* is included, and our players can be filtered out locally. For Bolton
+that yields Sam Dalby (2), Thierry Gale (1) and Xavier Simons (1), none of whom
+come close to the league top ten.
+
+So **one request serves both views**: our team's list as the main content, and
+the league leader as a single line of context. The screen labels which list it
+is showing, because two goals reads as a plausible team-leading tally and as
+nonsense for a league-leading one.
+
+### 4.7 Team crests
+
+Requested, and worth doing — a crest is what makes the device feel like *your*
+team's rather than a generic data display.
+
+**Verified from the API:** football-data.org returns a `crest` URL per team
+(`https://crests.football-data.org/60.png` for Bolton). Measured: **70×70,
+8-bit RGBA PNG, 7,736 bytes**. It also returns `clubColors` ("White / Navy
+Blue"), which could tint the UI per team.
+
+Planned approach, consistent with rules R2 and R3:
+
+* Fetch each crest **once**, decode it on-device, and cache the result to
+  LittleFS as raw RGB565 — never re-fetch and never re-decode. Crest URLs are
+  static, so this is a permanent cache with no TTL.
+* Decode with a **streaming PNG decoder** (PNGdec), which works line by line
+  and so needs nothing like a whole-image buffer — necessary given the largest
+  contiguous heap block is ~112 KB.
+* Store at **64×64** rather than native 70×70: a power-of-two size scales
+  cleanly, and it costs 8 KB per crest, so all 24 clubs occupy **192 KB** of
+  our 1408 KB filesystem. Comfortable.
+* **Composite the alpha channel away at decode time**, against the known UI
+  background, rather than storing an alpha channel and blending every frame.
+  The trade-off: a crest cannot then sit on a differently-coloured background,
+  which is fine because the match screens have a constant one. If a crest is
+  later wanted on a highlighted row, a 1-bit mask can be stored alongside.
+* Crests appear on **Last result** and **Next fixture** (both clubs) and beside
+  our team's name on the Season screen. The league table stays text-only —
+  24 rows of icons would be unreadable at 19 px per row.
+* Fetching crests costs **zero API quota**: `crests.football-data.org` is a
+  plain static host, not the rate-limited API.
+
+This is deferred until the network layer exists, and is tracked on the roadmap.
 
 ## 5. Fetching and caching
 
@@ -453,7 +504,7 @@ visibility into the API budget.
 |---|---|
 | **Dashboard** | Today's API usage vs limit, remaining quota, next scheduled refresh, cache freshness per data type, uptime, free heap, Wi-Fi RSSI |
 | **Team & league** | Team search (by name, via API) and league/season selection |
-| **Screens** | Enable/disable and reorder screens; set dwell time; brightness and auto-brightness |
+| **Screens** | Enable/disable and reorder screens; **set the cycle dwell time** (requested); brightness and auto-brightness |
 | **Wi-Fi** | Network scan and credential entry |
 | **Cache** | Inspect each cached document, its age and size; force refresh (spends quota, with a confirmation) or clear |
 | **System** | OTA firmware upload, factory reset, timezone, log |
@@ -566,7 +617,8 @@ Each item is one branch, per R1.
 * [x] Touch driver + calibration — hand-rolled XPT2046, IRQ-based press
       detection, **three-point** calibration detecting the transposed axes,
       tap/swipe gestures verified by an in-firmware direction check
-* [ ] Screen manager and auto-cycling with placeholder data
+* [x] Screen manager and auto-cycling with placeholder data — six screens,
+      swipe navigation, scrollable 24-row table, all verified on hardware
 * [ ] LittleFS, config and cache layer with atomic writes
 * [ ] Wi-Fi provisioning — SoftAP + captive portal
 * [ ] Web interface with Pure CSS caching
@@ -574,6 +626,7 @@ Each item is one branch, per R1.
 * [ ] api-sports client — streaming parse, filters, budget enforcement
 * [ ] The six real screens
 * [ ] Live match polling with adaptive scheduling
+* [ ] Team crests — streaming PNG decode, permanent LittleFS cache (§4.7)
 * [ ] Hardware extras — LDR, RGB LED, speaker
 * [ ] Power optimisation phase, with measurements
 * [ ] OTA updates
@@ -588,6 +641,7 @@ Not committed, recorded so they are not lost:
 * Head-to-head record on the "next fixture" screen
 * Web push or webhook on goals
 * Screensaver showing the team crest
+* Tint the UI with the team's `clubColors`, which the API already returns
 * BLE as an alternative provisioning path
 * Multi-league support for teams in cup competitions
 
@@ -597,6 +651,9 @@ Not committed, recorded so they are not lost:
   inverted variant**, needing `-D TFT_INVERSION_ON=1`. Geometry and pin map were
   correct as specified. Panel ID read-back is unavailable on this unit (MISO is
   on strapping pin GPIO12), so it was identified visually.
+* **Countdown shows `--` until NTP is wired up.** By design: the time
+  formatter refuses to guess rather than silently showing a kick-off an hour
+  out during BST. Resolves with the network layer.
 * **🚩 Light sensor reads zero.** GPIO34 sits at ground with no variance, so the
   LDR is probably not populated on this board. **Auto-brightness (§9 item 1) may
   have to be dropped**; inactivity dimming is unaffected and remains the real
