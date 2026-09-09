@@ -2,22 +2,20 @@
  * @file main.cpp
  * @brief Hardware bring-up diagnostic for the ESP32 Football Tracker.
  *
- * This is the first firmware flashed to the board, and its job is to answer
- * the open hardware questions in SPEC.md §13 rather than to look pretty:
+ * Written as a diagnostic rather than a demo: its job is to settle the open
+ * hardware questions in SPEC.md and to produce the per-device constants the
+ * finished firmware needs.
  *
- *   1. Which panel controller is fitted? TFT_eSPI selects its driver at
- *      compile time, so the factory image told us nothing. We read the
- *      panel's own ID registers and print them.
- *   2. Is the colour order RGB or BGR? A mis-set order shows as red and blue
- *      swapped, which is trivial to see on a colour-bar pattern and a
- *      one-flag fix.
- *   3. Is there a row/column offset? ST7789 and ILI9341 differ here, and a
- *      1px border reveals it immediately.
- *   4. Do the peripherals the power and UX plans depend on actually work —
- *      backlight PWM dimming, the ADC1 light sensor, and the RGB LED?
+ * Display bring-up (complete) established that this panel is an ILI9341
+ * variant that powers up inverted, and measured a 31 ms full-screen fill.
  *
- * It also prints a chip report so the claims in docs/HARDWARE.md can be
- * checked against the running silicon rather than trusted.
+ * Touch bring-up (this stage) does three things:
+ *   1. Confirms the XPT2046 responds on its own SPI bus without disturbing the
+ *      display, which shares neither pins nor peripheral.
+ *   2. Derives calibration constants by asking for two taps at known targets.
+ *      Resistive panels vary unit to unit, so these cannot be assumed.
+ *   3. Verifies the touch IRQ line behaves — the same line is the deep-sleep
+ *      wake source, so if it misbehaves here, wake-on-touch will not work.
  */
 
 #include <Arduino.h>
@@ -28,13 +26,23 @@
 #include <esp_system.h>
 
 #include "board_config.h"
+#include "touch_input.h"
 
 namespace {
 
 TFT_eSPI tft;
+touch::TouchInput touchInput;
+
+/// Kept so the result can be re-announced periodically — a capture started
+/// after calibration finished would otherwise miss it entirely.
+touch::Calibration g_calibration;
+bool g_calibrated = false;
 
 /// Remembered from setup() so the serial toggle handler can redraw correctly.
 bool g_panelConfirmed = false;
+
+/// Current display inversion state, shown on screen and toggleable over serial.
+bool g_inverted = true;  // matches the TFT_INVERSION_ON build flag
 
 // ---------------------------------------------------------------------------
 // Chip report
@@ -43,9 +51,8 @@ bool g_panelConfirmed = false;
 /**
  * Print what the silicon says about itself.
  *
- * Worth doing on every boot during development: it is the cheapest possible
- * guard against a swapped board or a wrong build target, and it confirms the
- * "no PSRAM" constraint that shapes the whole design.
+ * The cheapest possible guard against a swapped board or wrong build target,
+ * and it confirms the "no PSRAM" constraint that shapes the whole design.
  */
 void reportChip() {
   esp_chip_info_t info;
@@ -53,28 +60,14 @@ void reportChip() {
 
   Serial.println();
   Serial.println(F("=== Chip ==="));
-  Serial.printf("Model          : %s\n",
-                info.model == CHIP_ESP32 ? "ESP32" : "other");
-  Serial.printf("Cores          : %d\n", info.cores);
-  Serial.printf("Silicon rev    : %d\n", info.revision);
+  Serial.printf("Cores / rev    : %d / %d\n", info.cores, info.revision);
   Serial.printf("CPU frequency  : %lu MHz\n", (unsigned long)getCpuFrequencyMhz());
-  Serial.printf("Features       : WiFi%s%s\n",
-                (info.features & CHIP_FEATURE_BT) ? " + BT" : "",
-                (info.features & CHIP_FEATURE_BLE) ? " + BLE" : "");
-  Serial.printf("Flash size     : %lu KB\n",
-                (unsigned long)(ESP.getFlashChipSize() / 1024));
-  Serial.printf("Flash speed    : %lu MHz\n",
+  Serial.printf("Flash          : %lu KB @ %lu MHz\n",
+                (unsigned long)(ESP.getFlashChipSize() / 1024),
                 (unsigned long)(ESP.getFlashChipSpeed() / 1000000));
-  // getFreeSketchSpace() reports the size of the *next OTA slot*, not the
-  // headroom in the running partition — printing them added together would
-  // imply a partition size that does not exist.
   Serial.printf("Sketch size    : %lu KB\n",
                 (unsigned long)(ESP.getSketchSize() / 1024));
-  Serial.printf("OTA slot free  : %lu KB (the other app partition)\n",
-                (unsigned long)(ESP.getFreeSketchSpace() / 1024));
 
-  // The number that matters most. Every design decision about JSON parsing
-  // and framebuffers follows from how little of this we have.
   Serial.println();
   Serial.println(F("=== Memory ==="));
   Serial.printf("Free heap      : %lu bytes\n", (unsigned long)ESP.getFreeHeap());
@@ -84,13 +77,6 @@ void reportChip() {
                 (unsigned long)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
   Serial.printf("PSRAM          : %s\n",
                 ESP.getPsramSize() > 0 ? "present" : "NONE (as expected)");
-
-  // A full 320x240x16-bit framebuffer would need this much. Printed as a
-  // standing reminder of why we draw through a small sprite instead.
-  constexpr uint32_t kFullFramebuffer =
-      static_cast<uint32_t>(board::kScreenWidth) * board::kScreenHeight * 2;
-  Serial.printf("Full framebuffer would cost %lu bytes — not affordable\n",
-                (unsigned long)kFullFramebuffer);
 }
 
 // ---------------------------------------------------------------------------
@@ -100,84 +86,43 @@ void reportChip() {
 /**
  * Read the panel's ID registers to identify the controller.
  *
- * ILI9341 answers command 0xD3 (RDDID4) with 0x00 0x93 0x41 — the "9341" is
- * legible in the last two bytes. ST7789 does not implement 0xD3 and reports a
- * different signature on 0x04 (RDDID). We print both so the result is
- * interpretable even if neither matches expectations.
- *
- * Caveat, and the reason we do not treat a failed read as proof of anything:
- * panel read-back arrives over MISO on GPIO12, which is a live strapping pin
- * on this board. Reads are known to be unreliable on some units. So a
- * successful read is strong evidence, while all-zeroes or all-0xFF means
- * "could not tell" — not "wrong panel". The colour-bar test below is the
- * authoritative check either way, because it needs no read-back at all.
- *
- * @return true if the signature positively identifies an ILI9341.
+ * Read-back arrives over MISO on GPIO12, a live strapping pin, and is known to
+ * fail on this unit. All-zeroes therefore means "could not tell", never "wrong
+ * panel" — the on-screen pattern is the authoritative check.
  */
 bool identifyPanel() {
   Serial.println();
   Serial.println(F("=== Panel identification ==="));
-
-  const uint8_t d3[3] = {
-      tft.readcommand8(0xD3, 1),
-      tft.readcommand8(0xD3, 2),
-      tft.readcommand8(0xD3, 3),
-  };
-  const uint8_t rddid[3] = {
-      tft.readcommand8(0x04, 1),
-      tft.readcommand8(0x04, 2),
-      tft.readcommand8(0x04, 3),
-  };
-
+  const uint8_t d3[3] = {tft.readcommand8(0xD3, 1), tft.readcommand8(0xD3, 2),
+                         tft.readcommand8(0xD3, 3)};
   Serial.printf("0xD3 (RDDID4)  : %02X %02X %02X\n", d3[0], d3[1], d3[2]);
-  Serial.printf("0x04 (RDDID)   : %02X %02X %02X\n", rddid[0], rddid[1], rddid[2]);
 
   const bool isIli9341 = (d3[1] == 0x93 && d3[2] == 0x41);
-  const bool readFailed =
-      (d3[0] == 0x00 && d3[1] == 0x00 && d3[2] == 0x00) ||
-      (d3[0] == 0xFF && d3[1] == 0xFF && d3[2] == 0xFF);
-
-  if (isIli9341) {
-    Serial.println(F("VERDICT: ILI9341 confirmed — build flags are correct."));
-  } else if (readFailed) {
-    Serial.println(F("VERDICT: read-back unavailable (expected on some units)."));
-    Serial.println(F("         Judge by the colour bars on screen instead."));
-  } else {
-    Serial.println(F("VERDICT: unexpected signature — likely ST7789."));
-    Serial.println(F("         Swap ILI9341_2_DRIVER for ST7789_DRIVER in"));
-    Serial.println(F("         platformio.ini and reflash."));
-  }
+  Serial.println(isIli9341
+                     ? F("VERDICT: ILI9341 confirmed.")
+                     : F("VERDICT: read-back unavailable (expected here) --"
+                         " judged visually instead."));
   return isIli9341;
 }
 
 // ---------------------------------------------------------------------------
-// Backlight
+// Backlight and LED
 // ---------------------------------------------------------------------------
 
-/// Attach the backlight to its LEDC channel. Starts dark to avoid a bright
-/// flash of uninitialised panel memory at boot.
 void backlightBegin() {
   ledcSetup(board::kBacklightChannel, board::kBacklightFreqHz,
             board::kBacklightBits);
   ledcAttachPin(board::kPinBacklight, board::kBacklightChannel);
-  ledcWrite(board::kBacklightChannel, 0);
+  ledcWrite(board::kBacklightChannel, 0);  // Start dark: no boot flash.
 }
 
-/// @param percent 0 = off, 100 = full.
 void backlightSet(uint8_t percent) {
-  const uint32_t duty =
-      (static_cast<uint32_t>(min<uint8_t>(percent, 100)) *
-       board::kBacklightMaxDuty) / 100;
-  ledcWrite(board::kBacklightChannel, duty);
+  ledcWrite(board::kBacklightChannel,
+            (static_cast<uint32_t>(min<uint8_t>(percent, 100)) *
+             board::kBacklightMaxDuty) / 100);
 }
 
-// ---------------------------------------------------------------------------
-// Status LED
-// ---------------------------------------------------------------------------
-//
-// The RGB LED is active LOW, so these wrappers exist purely so no caller has
-// to remember that.
-
+// The RGB LED is active LOW; these wrappers exist so no caller must remember.
 void ledBegin() {
   for (const uint8_t pin :
        {board::kPinLedRed, board::kPinLedGreen, board::kPinLedBlue}) {
@@ -192,36 +137,10 @@ void ledSet(bool red, bool green, bool blue) {
   digitalWrite(board::kPinLedBlue, blue ? board::kLedOn : board::kLedOff);
 }
 
-/// Cycle each channel so a wiring or polarity mistake is visible at a glance.
-void ledSelfTest() {
-  Serial.println();
-  Serial.println(F("=== RGB LED self-test ==="));
-  const struct { const char* name; bool r, g, b; } steps[] = {
-      {"red", true, false, false},
-      {"green", false, true, false},
-      {"blue", false, false, true},
-      {"white", true, true, true},
-  };
-  for (const auto& s : steps) {
-    Serial.printf("  %s\n", s.name);
-    ledSet(s.r, s.g, s.b);
-    delay(350);
-  }
-  ledSet(false, false, false);
-}
-
 // ---------------------------------------------------------------------------
-// Ambient light sensor
+// Ambient light
 // ---------------------------------------------------------------------------
 
-/**
- * Sample the LDR and report it.
- *
- * Averaged over several reads because the raw ESP32 ADC is noisy; the
- * auto-brightness feature will need this smoothing anyway, so it is proven
- * here. A reading that never changes when the sensor is covered means
- * auto-brightness is not viable and the feature should be dropped from §9.
- */
 uint16_t readAmbient() {
   constexpr uint8_t kSamples = 16;
   uint32_t total = 0;
@@ -232,136 +151,207 @@ uint16_t readAmbient() {
   return static_cast<uint16_t>(total / kSamples);
 }
 
-/// Same reading expressed in millivolts, which distinguishes "dark room" from
-/// "pin sitting at 0 V because nothing is attached to it".
-uint32_t readAmbientMillivolts() {
-  constexpr uint8_t kSamples = 16;
-  uint32_t total = 0;
-  for (uint8_t i = 0; i < kSamples; ++i) {
-    total += analogReadMilliVolts(board::kPinLdr);
-    delay(2);
-  }
-  return total / kSamples;
-}
-
 // ---------------------------------------------------------------------------
-// Display test pattern
+// Touch calibration
 // ---------------------------------------------------------------------------
 
-/**
- * Draw the pattern that settles colour order and screen offset.
- *
- * Deliberately labelled on-screen: the whole point is that someone looking at
- * the board can tell instantly whether the bar under the word "RED" is
- * actually red. If red and blue are swapped, add -D TFT_RGB_ORDER=TFT_BGR.
- */
-/// Current display inversion state, so it can be shown on screen and toggled
-/// live over serial without a reflash cycle.
-bool g_inverted = true;  // matches the TFT_INVERSION_ON build flag
+/// Where the calibration targets sit, inset from the corners so a fingertip
+/// can reach them comfortably without falling off the panel edge.
+constexpr int16_t kTargetInsetX = 28;
+constexpr int16_t kTargetInsetY = 28;
 
-void drawTestPattern(bool panelConfirmed) {
+/// Draw a crosshair target with a prompt above it.
+void drawTarget(int16_t x, int16_t y, const char* prompt, uint8_t index) {
   tft.fillScreen(TFT_BLACK);
-
-  // A 1px border touching all four edges. If any edge is missing or clipped,
-  // the driver's row/column offset is wrong for this panel.
-  tft.drawRect(0, 0, board::kScreenWidth, board::kScreenHeight, TFT_WHITE);
-
-  tft.setTextDatum(TC_DATUM);
+  tft.setTextDatum(MC_DATUM);
   tft.setTextColor(TFT_WHITE, TFT_BLACK);
-  tft.drawString("FOOTBALL TRACKER", board::kScreenWidth / 2, 8, 4);
-  tft.setTextColor(TFT_DARKGREY, TFT_BLACK);
-  tft.drawString("hardware bring-up", board::kScreenWidth / 2, 32, 2);
-
-  // Colour bars with their expected names underneath.
-  const struct { const char* name; uint16_t colour; } bars[] = {
-      {"RED", TFT_RED},
-      {"GRN", TFT_GREEN},
-      {"BLU", TFT_BLUE},
-      {"WHT", TFT_WHITE},
-  };
-  constexpr int16_t kBarTop    = 56;
-  constexpr int16_t kBarHeight = 60;
-  const int16_t barWidth = (board::kScreenWidth - 20) / 4;
-
-  for (int i = 0; i < 4; ++i) {
-    const int16_t x = 10 + i * barWidth;
-    tft.fillRect(x, kBarTop, barWidth - 4, kBarHeight, bars[i].colour);
-    tft.setTextColor(TFT_WHITE, TFT_BLACK);
-    tft.drawString(bars[i].name, x + (barWidth - 4) / 2,
-                   kBarTop + kBarHeight + 4, 2);
-  }
-
-  // Verdict line, so the screen alone tells the story.
-  tft.setTextDatum(TC_DATUM);
-  if (panelConfirmed) {
-    tft.setTextColor(TFT_GREEN, TFT_BLACK);
-    tft.drawString("ILI9341 confirmed", board::kScreenWidth / 2, 148, 2);
-  } else {
-    tft.setTextColor(TFT_YELLOW, TFT_BLACK);
-    tft.drawString("panel ID unread - check bars", board::kScreenWidth / 2, 148, 2);
-  }
-  // State is drawn on screen so a photograph of the display is enough to tell
-  // which setting was active — no need to correlate against serial output.
+  tft.drawString("TOUCH CALIBRATION", board::kScreenWidth / 2,
+                 board::kScreenHeight / 2 - 26, 4);
   tft.setTextColor(TFT_CYAN, TFT_BLACK);
-  tft.drawString(g_inverted ? "inversion: ON" : "inversion: OFF",
-                 board::kScreenWidth / 2, 168, 2);
+  tft.drawString(prompt, board::kScreenWidth / 2,
+                 board::kScreenHeight / 2 + 4, 2);
   tft.setTextColor(TFT_DARKGREY, TFT_BLACK);
-  tft.drawString("send 'i' over serial to toggle",
-                 board::kScreenWidth / 2, 190, 2);
+  char step[24];
+  snprintf(step, sizeof(step), "target %u of 2", index);
+  tft.drawString(step, board::kScreenWidth / 2,
+                 board::kScreenHeight / 2 + 26, 2);
 
-  // A greyscale ramp. Inversion errors are obvious here even to someone not
-  // comparing bar labels: the ramp must run dark-to-light left to right.
-  constexpr int16_t kRampTop = 212;
-  for (int16_t x = 0; x < board::kScreenWidth - 20; ++x) {
-    const uint8_t level = (x * 255) / (board::kScreenWidth - 21);
-    tft.drawFastVLine(10 + x, kRampTop, 18, tft.color565(level, level, level));
-  }
-  tft.setTextDatum(TL_DATUM);
-  tft.setTextColor(TFT_WHITE, TFT_BLACK);
-  tft.drawString("dark", 12, kRampTop - 14, 2);
-  tft.setTextDatum(TR_DATUM);
-  tft.drawString("light", board::kScreenWidth - 12, kRampTop - 14, 2);
-  tft.setTextDatum(TC_DATUM);
-}
-
-/// Flip inversion and redraw. Exists so the correct setting can be found
-/// interactively instead of through repeated build-and-flash cycles.
-void toggleInversion(bool panelConfirmed) {
-  g_inverted = !g_inverted;
-  tft.invertDisplay(g_inverted);
-  drawTestPattern(panelConfirmed);
-  Serial.printf("inversion now %s -- if colours are correct, keep %s\n",
-                g_inverted ? "ON" : "OFF",
-                g_inverted ? "-D TFT_INVERSION_ON=1"
-                           : "-D TFT_INVERSION_OFF=1");
+  tft.drawLine(x - 12, y, x + 12, y, TFT_RED);
+  tft.drawLine(x, y - 12, x, y + 12, TFT_RED);
+  tft.drawCircle(x, y, 7, TFT_RED);
+  tft.fillCircle(x, y, 2, TFT_YELLOW);
 }
 
 /**
- * Time a series of full-screen fills.
+ * Block until the panel is tapped, and return an averaged raw reading.
  *
- * Establishes the SPI throughput baseline we will measure future rendering
- * against, and confirms DMA-free blocking writes are already fast enough that
- * the UI will not feel sluggish.
+ * Samples are taken while the finger is down and averaged, because a single
+ * resistive read is noisy. The first few readings after contact are discarded:
+ * they are taken while pressure is still building and are the least accurate.
+ *
+ * @return false if no tap arrived within the timeout.
  */
-void benchmarkFill() {
-  Serial.println();
-  Serial.println(F("=== Fill benchmark ==="));
-  const uint16_t colours[] = {TFT_RED, TFT_GREEN, TFT_BLUE, TFT_BLACK};
-  const uint32_t start = millis();
-  constexpr uint8_t kRounds = 4;
-  for (uint8_t r = 0; r < kRounds; ++r) {
-    for (const uint16_t c : colours) tft.fillScreen(c);
+bool waitForTap(uint16_t& outX, uint16_t& outY) {
+  // Deliberately waits forever rather than timing out. A timeout here made
+  // bring-up depend on the operator reading an instruction within a fixed
+  // window, which is a race the firmware should not impose. Raw values are
+  // logged while waiting so a dead SPI link is still diagnosable.
+  uint32_t lastBeat = 0;
+  while (!touchInput.isPressed()) {
+    if (millis() - lastBeat > 2000) {
+      lastBeat = millis();
+      uint16_t rx = 0, ry = 0, rz = 0;
+      touchInput.readRawUnfiltered(rx, ry, rz);
+      Serial.printf("waiting for tap...  IRQ=%s  raw=(%4u,%4u) Z=%4u"
+                    " (need Z>%u)\n",
+                    touchInput.irqAsserted() ? "LOW " : "HIGH", rx, ry, rz,
+                    touch::TouchInput::pressureThreshold());
+    }
+    delay(10);
   }
-  const uint32_t elapsed = millis() - start;
-  const uint32_t fills = kRounds * 4;
-  const uint32_t pixels = fills * board::kScreenWidth * board::kScreenHeight;
 
-  Serial.printf("%lu full-screen fills in %lu ms (%.1f ms each)\n",
-                (unsigned long)fills, (unsigned long)elapsed,
-                static_cast<double>(elapsed) / fills);
-  Serial.printf("~%.1f Mpixel/s => a full redraw costs ~%.1f ms\n",
-                (pixels / 1000000.0) / (elapsed / 1000.0),
-                static_cast<double>(elapsed) / fills);
+  // Discard the settling period.
+  delay(60);
+
+  uint32_t sumX = 0, sumY = 0;
+  uint16_t samples = 0;
+  uint16_t rx = 0, ry = 0, rz = 0;
+  const uint32_t sampleUntil = millis() + 180;
+  while (millis() < sampleUntil) {
+    if (touchInput.getRaw(rx, ry, rz)) {
+      sumX += rx;
+      sumY += ry;
+      ++samples;
+    }
+    delay(5);
+  }
+  if (samples == 0) return false;
+
+  outX = static_cast<uint16_t>(sumX / samples);
+  outY = static_cast<uint16_t>(sumY / samples);
+
+  // Wait for release so the next target does not consume this same press.
+  while (touchInput.isPressed()) delay(10);
+  delay(120);
+  return true;
+}
+
+/**
+ * Derive calibration from two taps at known screen positions.
+ *
+ * Two points are enough for a linear fit per axis, which is what a resistive
+ * panel needs. We extrapolate from the two measured points out to the screen
+ * edges rather than tapping the corners directly — tapping the very corner of a
+ * resistive panel is unreliable and uncomfortable.
+ *
+ * Axis inversion is *detected*, not assumed: if the raw value falls as the
+ * screen coordinate rises, that axis is wired backwards relative to the
+ * display.
+ */
+bool calibrate(touch::Calibration& out) {
+  Serial.println();
+  Serial.println(F("=== Touch calibration ==="));
+
+  const int16_t x1 = kTargetInsetX;
+  const int16_t y1 = kTargetInsetY;
+  const int16_t x2 = board::kScreenWidth - kTargetInsetX;
+  const int16_t y2 = board::kScreenHeight - kTargetInsetY;
+
+  uint16_t r1x = 0, r1y = 0, r2x = 0, r2y = 0;
+
+  drawTarget(x1, y1, "Tap the centre of the cross", 1);
+  if (!waitForTap(r1x, r1y)) {
+    Serial.println(F("No touch detected -- timed out on target 1."));
+    return false;
+  }
+  Serial.printf("target 1 (%d,%d) -> raw (%u,%u)\n", x1, y1, r1x, r1y);
+
+  drawTarget(x2, y2, "Now tap this one", 2);
+  if (!waitForTap(r2x, r2y)) {
+    Serial.println(F("No touch detected -- timed out on target 2."));
+    return false;
+  }
+  Serial.printf("target 2 (%d,%d) -> raw (%u,%u)\n", x2, y2, r2x, r2y);
+
+  // Guard against both taps landing in the same place, which would make the
+  // fit degenerate and produce a divide-by-zero mapping.
+  if (abs(static_cast<int32_t>(r2x) - r1x) < 200 ||
+      abs(static_cast<int32_t>(r2y) - r1y) < 200) {
+    Serial.println(F("Raw values too close together -- calibration rejected."));
+    Serial.println(F("Were both taps in the same place?"));
+    return false;
+  }
+
+  // Linear extrapolation to the screen edges, per axis.
+  const float slopeX = static_cast<float>(r2x - r1x) / (x2 - x1);
+  const float slopeY = static_cast<float>(r2y - r1y) / (y2 - y1);
+  const float rawAtX0 = r1x - slopeX * x1;
+  const float rawAtY0 = r1y - slopeY * y1;
+  const float rawAtXMax = rawAtX0 + slopeX * (board::kScreenWidth - 1);
+  const float rawAtYMax = rawAtY0 + slopeY * (board::kScreenHeight - 1);
+
+  out.invertX = slopeX < 0;
+  out.invertY = slopeY < 0;
+  // Stored unclamped. A correct fit can extrapolate outside the controller's
+  // 0..4095 range, and clamping it distorts the mapping near that edge — the
+  // reference unit's rawMinY legitimately fits at -41. Only the wide bounds of
+  // a signed 16-bit value are enforced, purely to keep the arithmetic sane.
+  out.rawMinX = static_cast<int16_t>(constrain(min(rawAtX0, rawAtXMax), -4095.0f, 8190.0f));
+  out.rawMaxX = static_cast<int16_t>(constrain(max(rawAtX0, rawAtXMax), -4095.0f, 8190.0f));
+  out.rawMinY = static_cast<int16_t>(constrain(min(rawAtY0, rawAtYMax), -4095.0f, 8190.0f));
+  out.rawMaxY = static_cast<int16_t>(constrain(max(rawAtY0, rawAtYMax), -4095.0f, 8190.0f));
+  out.valid = true;
+
+  Serial.println();
+  Serial.println(F("--- calibration result ---"));
+  Serial.printf("rawMinX=%d rawMaxX=%d invertX=%s\n", out.rawMinX, out.rawMaxX,
+                out.invertX ? "true" : "false");
+  Serial.printf("rawMinY=%d rawMaxY=%d invertY=%s\n", out.rawMinY, out.rawMaxY,
+                out.invertY ? "true" : "false");
+  Serial.println(F("Paste these into Calibration's defaults in touch_input.h"));
+  Serial.println(F("until NVS-backed config exists."));
+  return true;
+}
+
+// ---------------------------------------------------------------------------
+// Interactive touch test
+// ---------------------------------------------------------------------------
+
+void drawTestScreen() {
+  tft.fillScreen(TFT_BLACK);
+  tft.drawRect(0, 0, board::kScreenWidth, board::kScreenHeight, TFT_DARKGREY);
+  tft.setTextDatum(TC_DATUM);
+  tft.setTextColor(TFT_WHITE, TFT_BLACK);
+  tft.drawString("TOUCH TEST", board::kScreenWidth / 2, 6, 4);
+  tft.setTextColor(TFT_DARKGREY, TFT_BLACK);
+  tft.drawString("draw, tap, and swipe", board::kScreenWidth / 2, 30, 2);
+}
+
+/// Show the most recent decoded gesture, so swipe thresholds can be felt out.
+void showGesture(touch::Gesture g) {
+  const char* name = nullptr;
+  switch (g) {
+    case touch::Gesture::Tap:        name = "TAP";         break;
+    case touch::Gesture::SwipeLeft:  name = "SWIPE LEFT";  break;
+    case touch::Gesture::SwipeRight: name = "SWIPE RIGHT"; break;
+    case touch::Gesture::SwipeUp:    name = "SWIPE UP";    break;
+    case touch::Gesture::SwipeDown:  name = "SWIPE DOWN";  break;
+    default: return;
+  }
+  Serial.printf("gesture: %s\n", name);
+
+  tft.setTextDatum(BC_DATUM);
+  tft.fillRect(0, board::kScreenHeight - 30, board::kScreenWidth, 28,
+               TFT_NAVY);
+  tft.setTextColor(TFT_YELLOW, TFT_NAVY);
+  tft.drawString(name, board::kScreenWidth / 2, board::kScreenHeight - 6, 4);
+
+  // A tap clears the sketch area, which doubles as confirming taps are
+  // distinguished from swipes.
+  if (g == touch::Gesture::Tap) {
+    tft.fillRect(1, 44, board::kScreenWidth - 2,
+                 board::kScreenHeight - 76, TFT_BLACK);
+  }
 }
 
 }  // namespace
@@ -370,9 +360,7 @@ void benchmarkFill() {
 
 void setup() {
   Serial.begin(115200);
-  // Give the CH340 a moment to come up so the banner is not lost. Not a
-  // correctness requirement — purely so first-boot output is readable.
-  delay(300);
+  delay(300);  // Let the CH340 settle so the banner is not lost.
 
   Serial.println();
   Serial.println(F("############################################"));
@@ -383,85 +371,103 @@ void setup() {
   reportChip();
 
   ledBegin();
-  // Blue while starting up: the same convention the finished firmware uses to
-  // mean "not yet serving data".
-  ledSet(false, false, true);
+  ledSet(false, false, true);  // Blue: starting up, not yet serving data.
 
   backlightBegin();
-
   tft.init();
   tft.setRotation(board::kScreenRotation);
   tft.fillScreen(TFT_BLACK);
+  g_panelConfirmed = identifyPanel();
+  backlightSet(100);  // Safe to light now the panel is initialised and cleared.
 
-  const bool panelConfirmed = identifyPanel();
-
-  // Panel is initialised and cleared, so it is now safe to light the screen.
-  backlightSet(100);
-
-  benchmarkFill();
-  drawTestPattern(panelConfirmed);
-  g_panelConfirmed = panelConfirmed;
-
-  // 11 dB attenuation gives the full ~0-3.3 V input range. Set explicitly
-  // rather than relying on the default, so the reading means the same thing
-  // across core versions.
   analogSetPinAttenuation(board::kPinLdr, ADC_11db);
-
   Serial.println();
   Serial.println(F("=== Ambient light (ADC1) ==="));
-  Serial.printf("LDR raw: %u  (%lu mV)\n", readAmbient(),
-                (unsigned long)readAmbientMillivolts());
-  Serial.println(F("Shine a torch at the sensor: the value must move."));
-  Serial.println(F("A reading pinned at 0 mV in a lit room means the LDR"));
-  Serial.println(F("position is unpopulated on this unit."));
+  Serial.printf("LDR raw: %u -- a flat 0 means the sensor is unpopulated\n",
+                readAmbient());
 
-  ledSelfTest();
-
-  // Green: bring-up finished without hanging.
-  ledSet(false, true, false);
-
+  touchInput.begin();
   Serial.println();
-  Serial.println(F("Bring-up complete. Backlight will now ramp to prove"));
-  Serial.println(F("PWM dimming works — this is the basis of the power plan."));
+  Serial.println(F("=== Touch controller ==="));
+  Serial.printf("IRQ pin (GPIO%u) idle level: %s\n", board::kPinTouchIrq,
+                touchInput.irqAsserted() ? "LOW (asserted?!)" : "HIGH (correct)");
+
+  // Prove the SPI link before asking for any interaction. If these values are
+  // all zero or all 4095 the bus is wrong, and no amount of tapping will help.
+  Serial.println();
+  Serial.println(F("=== Raw channel check (untouched) ==="));
+  for (uint8_t i = 0; i < 3; ++i) {
+    uint16_t rx = 0, ry = 0, rz = 0;
+    touchInput.readRawUnfiltered(rx, ry, rz);
+    Serial.printf("  sample %u: X=%4u Y=%4u Z=%4u\n", i + 1, rx, ry, rz);
+    delay(120);
+  }
+  Serial.println(F("  (all-zero or all-4095 would mean a bad SPI link;"));
+  Serial.println(F("   small non-zero values are normal when untouched)"));
+
+  touch::Calibration cal;
+  if (calibrate(cal)) {
+    touchInput.setCalibration(cal);
+    g_calibration = cal;
+    g_calibrated  = true;
+    ledSet(false, true, false);  // Green: bring-up complete.
+  } else {
+    // Keep the built-in defaults so the test screen is still usable, but make
+    // the failure obvious rather than silently shipping a bad mapping.
+    Serial.println(F("Calibration failed -- falling back to defaults."));
+    ledSet(true, false, false);  // Red: something needs attention.
+  }
+
+  drawTestScreen();
+  Serial.println();
+  Serial.println(F("Touch test active. Drag to draw, tap to clear,"));
+  Serial.println(F("swipe to see gestures decoded."));
 }
 
 void loop() {
-  // Ramp the backlight up and down continuously. Two purposes: it proves LEDC
-  // dimming is smooth and flicker-free (the largest single power saving
-  // available to us), and it gives an unmistakable "the firmware is alive"
-  // signal without needing the serial monitor attached.
-  static uint8_t percent = 100;
-  static int8_t  step    = -2;
-
-  backlightSet(percent);
-  percent = static_cast<uint8_t>(percent + step);
-  if (percent <= 10 || percent >= 100) step = -step;
-
-  // Report ambient light once a second so auto-brightness behaviour can be
-  // eyeballed against real room lighting.
-  // Live inversion toggle. Cheap to add and it removes a whole
-  // build-flash-look round trip from getting the panel config right.
+  // Live inversion toggle, kept from display bring-up: it removes a whole
+  // build-flash-inspect round trip from getting panel config right.
   while (Serial.available() > 0) {
     const int c = Serial.read();
-    if (c == 'i' || c == 'I') toggleInversion(g_panelConfirmed);
+    if (c == 'i' || c == 'I') {
+      g_inverted = !g_inverted;
+      tft.invertDisplay(g_inverted);
+      Serial.printf("inversion now %s\n", g_inverted ? "ON" : "OFF");
+    }
   }
 
-  static uint32_t lastReport = 0;
-  static uint16_t ambientMin = 0xFFFF;
-  static uint16_t ambientMax = 0;
-  if (millis() - lastReport > 1000) {
-    lastReport = millis();
-    const uint16_t raw = readAmbient();
-    ambientMin = min(ambientMin, raw);
-    ambientMax = max(ambientMax, raw);
-    // The min/max range is the diagnostic that matters: a range of zero after
-    // the sensor has been lit and shaded means auto-brightness is not viable
-    // on this unit and the feature must come out of the power plan.
-    Serial.printf("ambient=%-5u range=[%u..%u] %lu mV  backlight=%u%%  heap=%lu\n",
-                  raw, ambientMin, ambientMax,
-                  (unsigned long)readAmbientMillivolts(), percent,
-                  (unsigned long)ESP.getFreeHeap());
+  // Re-announce the calibration result periodically. Serial output is only
+  // seen by whoever is listening at the time, so a one-shot print is lost to
+  // any capture that starts even a second late.
+  static uint32_t lastAnnounce = 0;
+  if (g_calibrated && millis() - lastAnnounce > 5000) {
+    lastAnnounce = millis();
+    Serial.printf("CALIBRATION rawX=[%d..%d] invX=%d  rawY=[%d..%d] invY=%d\n",
+                  g_calibration.rawMinX, g_calibration.rawMaxX,
+                  g_calibration.invertX ? 1 : 0, g_calibration.rawMinY,
+                  g_calibration.rawMaxY, g_calibration.invertY ? 1 : 0);
   }
 
-  delay(30);
+  // Gesture decoding must be polled steadily or presses are missed.
+  showGesture(touchInput.poll());
+
+  // Draw where the finger is. This is the real accuracy check: if the trail
+  // does not sit under the fingertip, calibration is wrong in a way no
+  // coordinate readout makes as obvious.
+  int16_t x = 0, y = 0;
+  if (touchInput.isPressed() && touchInput.getPoint(x, y)) {
+    if (y > 44 && y < board::kScreenHeight - 32) {
+      tft.fillCircle(x, y, 3, TFT_GREEN);
+    }
+    static uint32_t lastLog = 0;
+    if (millis() - lastLog > 150) {
+      lastLog = millis();
+      uint16_t rx = 0, ry = 0, rz = 0;
+      touchInput.getRaw(rx, ry, rz);
+      Serial.printf("touch screen=(%3d,%3d)  raw=(%4u,%4u)  pressure=%u\n", x,
+                    y, rx, ry, rz);
+    }
+  }
+
+  delay(8);
 }
