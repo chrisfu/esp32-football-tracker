@@ -73,7 +73,7 @@ constexpr const char* kOurTla = "BOL";
  * involving one specific club cannot be summoned to order. Set to **false**
  * once the API client supplies genuine live data.
  */
-constexpr bool kSimulateLiveMatch = true;
+constexpr bool kSimulateLiveMatch = false;
 
 /// Top scorers from /competitions/ELC/scorers. `assists` is null on the free
 /// tier, so it is absent from the model entirely rather than shown as zero.
@@ -105,6 +105,10 @@ constexpr SeedScorer kSeedTeamScorers[] = {
 }  // namespace
 
 void loadPlaceholder(Snapshot& out) {
+  // Now only a first-boot stand-in: it fills the screens for the few seconds
+  // between power-on and the first successful fetch, so the device never shows
+  // an empty carousel. Everything here is overwritten by real data.
+
   out = Snapshot{};
   setField(out.competitionName, "Championship");
   out.matchday = 6;

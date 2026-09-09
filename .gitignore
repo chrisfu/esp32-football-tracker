@@ -13,8 +13,11 @@
 *.map
 !data/**/*.bin
 
-# Secrets — API keys and WiFi credentials live on-device (NVS), never in git
+# Secrets — API keys and WiFi credentials live on-device (NVS), never in git.
+# include/secrets.h is a build-time convenience for provisioning a fresh
+# device; include/secrets_example.h is the committed template.
 secrets.h
+include/secrets.h
 credentials.json
 
 # macOS

@@ -28,6 +28,8 @@
 #include "board_config.h"
 #include "model.h"
 #include "network.h"
+#include "providers.h"
+#include "refresh.h"
 #include "screen.h"
 #include "screen_manager.h"
 #include "screens.h"
@@ -302,6 +304,10 @@ void setup() {
   g_screens.add(&g_nextFixture);
   g_screens.add(&g_leagueTable);
   g_screens.add(&g_topScorer);
+  // Start fetching. The scheduler waits for the clock on its own, since TLS
+  // certificate validation needs one, so there is nothing to sequence here.
+  refresh::begin(g_settings, g_data);
+
   g_menu.begin(g_settings);
   // The live match screen takes priority whenever a match is in progress: the
   // device returns to it after the dwell rather than continuing the carousel.
@@ -389,6 +395,15 @@ void loop() {
     g_menu.open(tft);
     delay(8);
     return;
+  }
+
+  // Adopt any completed fetch between frames, which is the one moment nothing
+  // is mid-draw. See refresh.h for why this needs no lock.
+  if (refresh::adopt(g_data)) {
+    Serial.printf("[main] new data adopted (%u rows, live=%d, heap %lu)\n",
+                  g_data.tableRows, g_data.liveActive,
+                  (unsigned long)ESP.getFreeHeap());
+    g_screens.refresh();
   }
 
   g_screens.handleGesture(gesture);
