@@ -1,0 +1,28 @@
+# ESP32 Football Tracker — partition table
+#
+# Deliberately identical in layout to the stock Arduino "default with OTA"
+# table that shipped on the board (verified by reading flash at 0x8000), so
+# there are no surprises and the factory geometry is preserved.
+#
+# Both OTA slots are kept: on a sealed device with no debug header, being able
+# to roll back a bad firmware is worth more than the ~1.28 MB that reclaiming
+# app1 would add to the filesystem. 1472 KB is already ample for our cache.
+#
+# The data partition keeps the "spiffs" name because Arduino's LittleFS driver
+# looks for that label by default — the name is historical, the format is
+# LittleFS.
+#
+# A 64 KB coredump partition is included for the same reason we keep both OTA
+# slots: this device has no debug header, so when it panics in the field the
+# only forensic trail is whatever it managed to write to flash. Without this
+# partition the ESP-IDF also logs "No core dump partition found!" as an error
+# on every single boot. It is carved out of the filesystem's tail, which is
+# harmless now (no data yet) and would be destructive later.
+#
+# Name,   Type, SubType, Offset,   Size,     Flags
+nvs,      data, nvs,     0x9000,   0x5000,
+otadata,  data, ota,     0xe000,   0x2000,
+app0,     app,  ota_0,   0x10000,  0x140000,
+app1,     app,  ota_1,   0x150000, 0x140000,
+spiffs,   data, spiffs,  0x290000, 0x160000,
+coredump, data, coredump,0x3F0000, 0x10000,
