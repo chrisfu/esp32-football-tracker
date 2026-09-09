@@ -44,14 +44,17 @@ read back **from the board itself**, not from a datasheet — see
 | Flash | **4 MB** (mfr `0x68`, device `0x4016`), DOUT mode @ 40 MHz |
 | PSRAM | **None** — `PKG_VERSION = 1` (D0WD has no in-package PSRAM) |
 | MAC | `20:50:0D:34:04:50` |
-| Display | 320×240 SPI, ILI9341 *(assumed — see note)* |
+| Display | 320×240 SPI, ILI9341-compatible — **inverted variant**, needs `TFT_INVERSION_ON` |
 | Touch | XPT2046 resistive, on independent SPI pins |
 | Extras | microSD slot (own SPI bus), RGB LED, speaker/DAC, LDR light sensor, 3 free GPIO |
 | USB bridge | **WCH CH340** (`0x1A86:0x7523`) |
 | Serial port | `/dev/cu.usbserial-2130` (macOS) |
 | Flash encryption | Disabled |
 | Secure boot | Not enabled |
-| As shipped | Factory LVGL 8.3.3 demo over TFT_eSPI with SPI DMA |
+| Display speed | 31.2 ms full-screen fill (~2.5 Mpixel/s) at 40 MHz SPI |
+| Free heap / largest block | 349,900 B / **114,676 B contiguous** |
+| Light sensor | ⚠️ reads 0 — **likely not populated** on this unit |
+| As shipped | Factory LVGL 8.3.3 demo over TFT_eSPI with SPI DMA (since overwritten) |
 | Partitions | Stock Arduino dual-OTA: `nvs` 20 K, `otadata` 8 K, `app0`/`app1` 1280 K each, `spiffs` 1472 K |
 
 **Findings worth knowing before you flash this board:**
@@ -64,11 +67,20 @@ read back **from the board itself**, not from a datasheet — see
   Wi-Fi and TLS are up), a full 320×240×16-bit framebuffer would need 150 KB and
   is simply not affordable. The firmware streams API responses straight into a
   filtered JSON parser and draws through a small reusable sprite instead.
-* ⚠️ **The panel controller is not yet hardware-confirmed.** TFT_eSPI picks its
-  driver at compile time, so the factory image contains no driver name to read
-  back. ILI9341 comes from the board reference; a few `2432S028` batches ship an
-  ST7789, which shows up as inverted colours or wrong orientation and is a
-  one-line define change. Confirmed at display bring-up.
+* ⚠️ **This panel is an inverted variant.** With a stock ILI9341 config it
+  renders every colour as its exact complement — white background, black text,
+  green as magenta, blue as yellow. The fix is `-D TFT_INVERSION_ON=1`, already
+  applied. Note this is *not* a BGR channel-order problem, which is the usual
+  first guess: a BGR panel swaps red and blue only and leaves white and green
+  alone. Geometry, pin map and offsets all needed no correction.
+* ⚠️ **Panel ID read-back is unavailable.** Both `0xD3` and `0x04` return all
+  zeroes, because MISO is on GPIO12, a live strapping pin. Identify the panel
+  visually with a test pattern instead — all-zeroes means "can't tell", not
+  "wrong panel".
+* ⚠️ **The light sensor reads a flat 0** (142 mV is just the ADC calibration
+  floor), so GPIO34 is at ground and the LDR is probably not populated on this
+  unit. Auto-brightness may therefore be unavailable; inactivity-based dimming
+  works regardless.
 * ℹ️ `GPIO12` (display MISO) is a live strapping pin — never drive it high at
   boot. `GPIO2` and `GPIO15` are also straps but are safely wired here.
 * ℹ️ Display, touch and SD sit on **three separate SPI groupings**, so SD access
