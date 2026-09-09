@@ -23,11 +23,14 @@
 #include <esp_chip_info.h>
 #include <esp_heap_caps.h>
 
+#include <time.h>
+
 #include "board_config.h"
 #include "model.h"
 #include "screen.h"
 #include "screen_manager.h"
 #include "screens.h"
+#include "store.h"
 #include "touch_calibration.h"
 #include "touch_input.h"
 
@@ -36,8 +39,18 @@ namespace {
 TFT_eSPI          tft;
 touch::TouchInput touchInput;
 
-/// How long each screen is shown while cycling. Web-configurable later.
-constexpr uint32_t kDwellMs = 12000;
+/// Loaded from NVS; the struct's own defaults apply on a first boot.
+store::Settings g_settings;
+
+/**
+ * Whether to exercise the storage layer on boot.
+ *
+ * On while the storage layer is new. It is the only way to verify atomic
+ * writes and freshness tracking on the real filesystem — there is no host-side
+ * test harness for LittleFS on this board — and it costs one write cycle per
+ * boot, which is nothing against LittleFS wear levelling.
+ */
+constexpr bool kRunStorageSelfTest = true;
 
 /// The single mutable copy of the data. The refresh scheduler will own writes;
 /// screens only ever see it as const.
@@ -114,6 +127,73 @@ void ledSet(bool red, bool green, bool blue) {
   digitalWrite(board::kPinLedBlue, blue ? board::kLedOn : board::kLedOff);
 }
 
+/**
+ * Prove the cache round-trips on the real filesystem.
+ *
+ * Checks the parts that are easy to get subtly wrong: that a write is
+ * immediately readable, that freshness is reported correctly, that a
+ * zero-TTL document reports stale rather than fresh, and that a document too
+ * large for the caller's buffer is refused instead of silently truncated.
+ */
+void storageSelfTest() {
+  if (!store::ready()) {
+    Serial.println(F("[selftest] store not ready -- skipping"));
+    return;
+  }
+
+  Serial.println();
+  Serial.println(F("=== Storage self-test ==="));
+
+  const char* payload = "{\"t\":\"selftest\",\"rows\":24}";
+  const size_t len = strlen(payload);
+
+  // Write, then read back.
+  if (!store::writeDoc(store::Doc::LiveMatch, payload, len, 3600)) {
+    Serial.println(F("[selftest] FAIL: write rejected"));
+    return;
+  }
+
+  char buf[64] = {0};
+  const size_t read = store::readDoc(store::Doc::LiveMatch, buf, sizeof(buf));
+  const bool roundTripped = (read == len) && (strcmp(buf, payload) == 0);
+  Serial.printf("[selftest] round-trip: %s (%u bytes)\n",
+                roundTripped ? "PASS" : "FAIL", (unsigned)read);
+
+  // Freshness, with a generous TTL. Note that before NTP the clock is unset,
+  // so freshness cannot be judged and the store deliberately reports stale —
+  // called out here so a fresh=0 does not read as a failure.
+  const bool clockSet = time(nullptr) > 1600000000L;
+  store::DocStatus st = store::statusOf(store::Doc::LiveMatch);
+  Serial.printf("[selftest] present=%d fresh=%d size=%lu ttl=%lu\n",
+                st.present, st.fresh, (unsigned long)st.size,
+                (unsigned long)st.ttl);
+  Serial.printf("[selftest] clock %s -- fresh=%d is %s here\n",
+                clockSet ? "set" : "NOT set (pre-NTP)", st.fresh,
+                clockSet ? "meaningful" : "expected: freshness needs a clock");
+
+  // A buffer deliberately too small must be refused, not truncated.
+  char tiny[8] = {0};
+  const size_t refused = store::readDoc(store::Doc::LiveMatch, tiny, sizeof(tiny));
+  Serial.printf("[selftest] oversize read refused: %s\n",
+                refused == 0 ? "PASS" : "FAIL");
+
+  // Zero TTL must read as stale immediately.
+  store::writeDoc(store::Doc::LiveMatch, payload, len, 0);
+  st = store::statusOf(store::Doc::LiveMatch);
+  Serial.printf("[selftest] zero-ttl reports stale: %s\n",
+                st.present && !st.fresh ? "PASS" : "FAIL");
+
+  // Leave nothing behind: this is a placeholder document, not real data.
+  store::clearDoc(store::Doc::LiveMatch);
+  st = store::statusOf(store::Doc::LiveMatch);
+  Serial.printf("[selftest] cleared: %s\n", !st.present ? "PASS" : "FAIL");
+
+  uint32_t used = 0, total = 0;
+  store::filesystemUsage(used, total);
+  Serial.printf("[selftest] filesystem %lu KB used of %lu KB\n",
+                (unsigned long)(used / 1024), (unsigned long)(total / 1024));
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -139,7 +219,21 @@ void setup() {
   tft.fillScreen(ui::colour::kBackground);
   backlightSet(100);  // Safe to light now the panel is initialised and cleared.
 
+  // Storage before anything that depends on configuration. A failure here is
+  // not fatal: the device runs from live fetches with defaults.
+  store::begin();
+  store::loadSettings(g_settings);
+  if (kRunStorageSelfTest) storageSelfTest();
+
+  backlightSet(g_settings.brightness);
+
   touchInput.begin();
+  // Apply stored calibration if this device has been calibrated; otherwise the
+  // compiled-in reference values stand in.
+  if (g_settings.touch.valid) {
+    touchInput.setCalibration(g_settings.touch);
+    Serial.println(F("Using stored touch calibration from NVS."));
+  }
 
   // Calibration is not run on every boot. The compiled-in defaults are the
   // verified fit for this unit, and forcing a three-tap ritual before the
@@ -152,11 +246,15 @@ void setup() {
     touch::Calibration cal;
     if (touch::runCalibration(tft, touchInput, cal)) {
       touchInput.setCalibration(cal);
+      // Persist before verifying: the calibration is worth keeping even if the
+      // operator walks away before completing the direction check.
+      g_settings.touch = cal;
+      store::saveSettings(g_settings);
       touch::verifyOrientation(tft, touchInput);
     } else {
       Serial.println(F("Calibration failed -- keeping compiled-in defaults."));
     }
-  } else {
+  } else if (!g_settings.touch.valid) {
     Serial.println(F("Using compiled-in touch calibration."));
     Serial.println(F("Hold BOOT during reset to recalibrate."));
   }
@@ -175,7 +273,7 @@ void setup() {
   g_screens.add(&g_nextFixture);
   g_screens.add(&g_leagueTable);
   g_screens.add(&g_topScorer);
-  g_screens.begin(tft, g_data, kDwellMs);
+  g_screens.begin(tft, g_data, g_settings.screenDwellMs);
 
   ledSet(false, true, false);  // Green: running.
   Serial.println();
