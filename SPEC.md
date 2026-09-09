@@ -138,6 +138,65 @@ from the dwell, gets the same coverage for a fraction of the work.
 
 ---
 
+### 4.5b Live match takes priority (requested)
+
+When a match involving our team is in progress, the live screen stops being one
+screen among several and becomes the default the device returns to.
+
+**Required behaviour:**
+
+1. **Live is shown by default** the moment a match involving our team goes
+   in-play — not on the next rotation, immediately.
+2. **Swiping away is temporary.** Any other screen may be viewed, but once the
+   dwell period elapses the device returns to Live rather than continuing round
+   the carousel. This is a deliberate exception to the normal rule that a
+   deliberate swipe pins the rotation: with a match on, "go back to the match"
+   is almost always what is wanted.
+3. **An explicit tap-hold still wins.** Someone who taps to hold a screen has
+   said so unambiguously, and that must not be overridden — otherwise the
+   device fights the user.
+4. **Next fixture skips the live match.** While a match is in progress, the
+   Next screen shows the *following* scheduled fixture, not the one being
+   played. Otherwise two screens show the same match and the genuinely useful
+   information — what is coming up — is lost.
+5. **The form guide gains a provisional chip** for the match in progress,
+   reflecting the current state (winning/drawing/losing), marked as provisional
+   so it is not mistaken for a settled result.
+6. **Everything reverts once the match is confirmed over.** Not when the clock
+   passes 90 — matches have stoppage time, and a result can change in it. The
+   trigger is the provider reporting the match finished, at which point the
+   provisional chip becomes a real result, Next advances, and normal rotation
+   resumes.
+
+Point 6 is the one with a trap in it: deciding a match is over from elapsed
+minutes would settle a result while a goal could still change it.
+
+### 4.5c Live match detail (requested)
+
+The live screen shows the match narrative, not just the score:
+
+| Shown | Source |
+|---|---|
+| Score and clock | `goals`, `fixture.status.elapsed` |
+| **Goalscorers with minute** | `events[]` where type is `Goal` |
+| Penalties and own goals distinguished | `events[].detail` |
+| **Yellow and red cards with minute** | `events[]` where type is `Card` |
+| Half-time / full-time state | `fixture.status.short` |
+
+**Verified available.** `/fixtures?live=all` returns an `events` array per
+fixture with `time.elapsed`, `type` (`Goal`, `Card`, `subst`), `detail`
+(`Yellow Card`, `Red Card`, `Normal Goal`, `Penalty`, `Own Goal`), `player`,
+`assist` and `team`.
+
+**Layout:** two columns, home left and away right, each listing that team's
+events in chronological order — so the shape of the match reads at a glance
+without having to parse which side each line belongs to.
+
+**Substitutions are deliberately excluded.** They are available, but on a
+320×240 panel screen space is the scarce resource, and a substitution tells a
+casual viewer far less than a goal or a card. Goals and cards only, capped at
+what fits, oldest first so the most recent is nearest the score.
+
 ### 4.6 Top scorers — our team, not just the league
 
 The league scoring chart is identical for every user of every device, and a
@@ -593,23 +652,38 @@ visibility into the API budget.
 | **Cache** | Inspect each cached document, its age and size; force refresh (spends quota, with a confirmation) or clear |
 | **System** | OTA firmware upload, factory reset, timezone, log |
 
-### Styling — Pure CSS, downloaded and cached
+### Styling — Pure CSS, embedded gzipped (decision revised)
 
-Per preference, [Pure CSS](https://pure-css.github.io/) is **fetched at runtime
-and cached to LittleFS**, not baked into flash:
+**Measured, then decided.** `pure-min.css` is **15,721 bytes raw and 3,583
+bytes gzipped**. The individual modules we would need (base, grids, forms,
+buttons, menus) come to about 4,500 bytes gzipped — *more* than the complete
+file, which compresses better as one unit. So the whole of Pure is cheaper than
+a subset of it.
 
-* On first successful internet connection, download `pure-min.css` (~17 KB) to
-  `/www/pure-min.css` and serve it locally from then on with a far-future
-  `Cache-Control`, so browsers fetch it once.
-* **A ~1 KB critical CSS is embedded in flash as a fallback, and this is not
-  optional.** During first-boot AP configuration **there is no internet
-  connection yet** — the very page whose job is to obtain Wi-Fi credentials
-  cannot download its own stylesheet. Without an embedded fallback the setup
-  portal would render unstyled at exactly the moment first impressions are
-  formed. The fallback also covers a failed download or a wiped filesystem.
+The original plan was to download and cache it at runtime. **That is now
+reversed: it is embedded in flash, gzipped, and served with
+`Content-Encoding: gzip`.** Reasons, in order of weight:
 
-We have flash to spare (1472 KB filesystem, 17 KB stylesheet), so this is a
-clean win rather than a compromise.
+1. **The AP setup portal has no internet.** The page whose entire job is to
+   obtain Wi-Fi credentials cannot download its own stylesheet. A download
+   strategy is structurally unable to work in the one situation where first
+   impressions are formed — so an embedded copy is required *regardless*, at
+   which point a second, downloaded copy earns nothing.
+2. **3.5 KB is not a saving worth engineering for.** Against ~900 KB free in
+   the app partition, the download path would cost more in code — fetch,
+   validate, cache, invalidate, fall back — than the asset itself.
+3. **No decompression on-device.** Served with `Content-Encoding: gzip`, the
+   browser inflates it. The ESP32 streams 3.5 KB straight from flash with no
+   RAM buffer and no CPU cost.
+4. Pure is a pinned version. There is nothing to keep fresh.
+
+This is consistent with the original preference, which allowed baking assets in
+where there is "plenty of left-over space" — there is. Rule R2 (cache what we
+pull) is unaffected: the best version of caching a static asset is not pulling
+it at all.
+
+Generated by `tools/gen_pure_css.py` into a header, so the embedded bytes are
+reproducible rather than a mystery blob.
 
 ### First-boot provisioning
 
@@ -705,6 +779,20 @@ reformatted as LittleFS in the same offset the stock table used for SPIFFS.
 
 ---
 
+### Flash budget — worth watching
+
+Adding Wi-Fi, `WebServer`, mDNS and the DNS server took the firmware from
+**40.5% to 72.4%** of the 1280 KB app partition in a single step, since they
+pull in the whole IP stack and mbedTLS. That leaves about **330 KB of
+headroom** for the HTTPS client, ArduinoJson, and the PNG decoder for crests.
+
+It should fit, but it is no longer a non-issue, and it retrospectively
+justifies two earlier decisions: declining LVGL (100–150 KB) and omitting
+TFT_eSPI's smooth fonts. If headroom does run short, reclaiming the `app1` OTA
+slot is the escape hatch — at the cost of firmware rollback, which is exactly
+the trade we deliberately declined earlier, so it would be a real loss rather
+than free space.
+
 ## 11. Roadmap
 
 Each item is one branch, per R1.
@@ -719,8 +807,11 @@ Each item is one branch, per R1.
       swipe navigation, scrollable 24-row table, all verified on hardware
 * [x] LittleFS, config and cache layer with atomic writes — settings in NVS,
       documents in LittleFS, freshness metadata, on-device self-test passing
-* [ ] Wi-Fi provisioning — SoftAP + captive portal
-* [ ] Web interface with Pure CSS caching
+* [x] Wi-Fi provisioning — SoftAP + captive portal, on-screen credentials,
+      NTP with UK DST, mDNS at `football.local`
+* [x] Web interface skeleton — embedded gzipped Pure CSS, setup portal,
+      dashboard showing quota and cache state
+* [ ] Web interface settings pages — team, screens, dwell, brightness, cache
 * [ ] Provider abstraction + football-data.org client (table, fixtures, scorers)
 * [ ] api-sports client — streaming parse, filters, budget enforcement
 * [ ] The six real screens
