@@ -46,10 +46,25 @@ struct Calibration {
   // controller's 0..4095 output range — calibration on this unit produced a
   // rawMinY of -41. Clamping that to an unsigned 0 compressed the top of the
   // screen by ~2.5 px, so the fit is stored as measured instead.
-  int16_t rawMinX = 559;
-  int16_t rawMaxX = 3571;
-  int16_t rawMinY = -41;
-  int16_t rawMaxY = 3903;
+  // NOTE ON NAMING: these bound the raw channel *assigned to* that screen
+  // axis, which is not the same as the controller channel of the same letter.
+  // With swapAxes set, rawMinX/rawMaxX bound the controller's Y channel. They
+  // are named for the screen axis they produce, because that is what every
+  // caller cares about.
+  int16_t rawMinX = 195;
+  int16_t rawMaxX = 3711;
+  int16_t rawMinY = 347;
+  int16_t rawMaxY = 3682;
+  /**
+   * True when the controller's X axis corresponds to the screen's Y axis.
+   *
+   * The digitizer reads in the panel's native portrait orientation while the
+   * display runs landscape, so on this board the axes are transposed. This is
+   * *detected* during calibration, never assumed — and detecting it requires a
+   * calibration target off the diagonal, which is why there are three.
+   */
+  bool swapAxes = true;  // Measured true on the reference unit.
+
   /// Some panels are wired with an axis reversed relative to the display.
   /// Detected during calibration rather than assumed.
   bool invertX = false;
@@ -58,9 +73,11 @@ struct Calibration {
   bool valid = false;
 };
 
-// The defaults above are the values measured on the reference unit during
-// bring-up, so an uncalibrated device is still usable. They are not a
-// substitute for calibrating each board.
+// The defaults above are the reference unit's measured three-point fit, and
+// unlike the earlier two-point figures they have been verified by a swipe
+// direction check on hardware. They are still no substitute for calibrating
+// each board; once NVS config exists, an uncalibrated device will offer
+// calibration on first boot rather than assume these apply.
 
 /// A decoded gesture. The screen manager consumes these rather than raw points.
 enum class Gesture : uint8_t {

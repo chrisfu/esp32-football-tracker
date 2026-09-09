@@ -155,13 +155,27 @@ uint16_t readAmbient() {
 // Touch calibration
 // ---------------------------------------------------------------------------
 
+/// Human-readable gesture name, shared by the direction check and the test
+/// screen so both describe gestures identically.
+const char* gestureName(touch::Gesture g) {
+  switch (g) {
+    case touch::Gesture::Tap:        return "TAP";
+    case touch::Gesture::SwipeLeft:  return "SWIPE LEFT";
+    case touch::Gesture::SwipeRight: return "SWIPE RIGHT";
+    case touch::Gesture::SwipeUp:    return "SWIPE UP";
+    case touch::Gesture::SwipeDown:  return "SWIPE DOWN";
+    default:                         return "NONE";
+  }
+}
+
 /// Where the calibration targets sit, inset from the corners so a fingertip
 /// can reach them comfortably without falling off the panel edge.
 constexpr int16_t kTargetInsetX = 28;
 constexpr int16_t kTargetInsetY = 28;
 
 /// Draw a crosshair target with a prompt above it.
-void drawTarget(int16_t x, int16_t y, const char* prompt, uint8_t index) {
+void drawTarget(int16_t x, int16_t y, const char* prompt, uint8_t index,
+                uint8_t total) {
   tft.fillScreen(TFT_BLACK);
   tft.setTextDatum(MC_DATUM);
   tft.setTextColor(TFT_WHITE, TFT_BLACK);
@@ -172,7 +186,7 @@ void drawTarget(int16_t x, int16_t y, const char* prompt, uint8_t index) {
                  board::kScreenHeight / 2 + 4, 2);
   tft.setTextColor(TFT_DARKGREY, TFT_BLACK);
   char step[24];
-  snprintf(step, sizeof(step), "target %u of 2", index);
+  snprintf(step, sizeof(step), "target %u of %u", index, total);
   tft.drawString(step, board::kScreenWidth / 2,
                  board::kScreenHeight / 2 + 26, 2);
 
@@ -236,66 +250,121 @@ bool waitForTap(uint16_t& outX, uint16_t& outY) {
   return true;
 }
 
+/// One raw reading, paired with the screen position that produced it.
+struct RawSample {
+  uint16_t x = 0;
+  uint16_t y = 0;
+};
+
 /**
- * Derive calibration from two taps at known screen positions.
+ * Derive calibration from three taps at known screen positions.
  *
- * Two points are enough for a linear fit per axis, which is what a resistive
- * panel needs. We extrapolate from the two measured points out to the screen
- * edges rather than tapping the corners directly — tapping the very corner of a
- * resistive panel is unreliable and uncomfortable.
+ * **Why three and not two.** An earlier version used two targets on the
+ * diagonal — top-left and bottom-right — and computed a linear fit per axis.
+ * That is structurally incapable of detecting a transposed digitizer: when both
+ * targets differ in both axes, "raw X tracks screen X" and "raw X tracks screen
+ * Y" fit the measurements equally well, and both look like a clean monotonic
+ * result. It silently produced a mapping rotated 90 degrees.
  *
- * Axis inversion is *detected*, not assumed: if the raw value falls as the
- * screen coordinate rises, that axis is wired backwards relative to the
- * display.
+ * Three targets fix this by isolating each axis:
+ *
+ *   TL ──────► TR     moving TL->TR changes ONLY screen X, so whichever raw
+ *   │                 channel moves is the one feeding screen X
+ *   ▼
+ *   BL                moving TL->BL changes ONLY screen Y
+ *
+ * Axis assignment and inversion are therefore both measured, not assumed.
  */
 bool calibrate(touch::Calibration& out) {
   Serial.println();
-  Serial.println(F("=== Touch calibration ==="));
+  Serial.println(F("=== Touch calibration (3-point) ==="));
 
-  const int16_t x1 = kTargetInsetX;
-  const int16_t y1 = kTargetInsetY;
-  const int16_t x2 = board::kScreenWidth - kTargetInsetX;
-  const int16_t y2 = board::kScreenHeight - kTargetInsetY;
+  const int16_t xL = kTargetInsetX;
+  const int16_t xR = board::kScreenWidth - kTargetInsetX;
+  const int16_t yT = kTargetInsetY;
+  const int16_t yB = board::kScreenHeight - kTargetInsetY;
 
-  uint16_t r1x = 0, r1y = 0, r2x = 0, r2y = 0;
+  RawSample tl, tr, bl;
 
-  drawTarget(x1, y1, "Tap the centre of the cross", 1);
-  if (!waitForTap(r1x, r1y)) {
-    Serial.println(F("No touch detected -- timed out on target 1."));
+  struct Step {
+    int16_t x, y;
+    const char* prompt;
+    RawSample* into;
+  };
+  const Step steps[] = {
+      {xL, yT, "Tap the cross: TOP-LEFT", &tl},
+      {xR, yT, "Now the TOP-RIGHT cross", &tr},
+      {xL, yB, "Now the BOTTOM-LEFT cross", &bl},
+  };
+
+  uint8_t index = 1;
+  for (const Step& step : steps) {
+    drawTarget(step.x, step.y, step.prompt, index, 3);
+    if (!waitForTap(step.into->x, step.into->y)) {
+      Serial.println(F("No touch detected -- aborting calibration."));
+      return false;
+    }
+    Serial.printf("target %u (%3d,%3d) -> raw (%4u,%4u)\n", index, step.x,
+                  step.y, step.into->x, step.into->y);
+    ++index;
+  }
+
+  // How each raw channel responds to movement along each screen axis.
+  const int32_t alongX_rawX = static_cast<int32_t>(tr.x) - tl.x;
+  const int32_t alongX_rawY = static_cast<int32_t>(tr.y) - tl.y;
+  const int32_t alongY_rawX = static_cast<int32_t>(bl.x) - tl.x;
+  const int32_t alongY_rawY = static_cast<int32_t>(bl.y) - tl.y;
+
+  Serial.println();
+  Serial.println(F("--- axis response ---"));
+  Serial.printf("moving along screen X: rawX %+ld, rawY %+ld\n",
+                (long)alongX_rawX, (long)alongX_rawY);
+  Serial.printf("moving along screen Y: rawX %+ld, rawY %+ld\n",
+                (long)alongY_rawX, (long)alongY_rawY);
+
+  // Whichever channel moves more when only screen X changes is the channel
+  // that feeds screen X.
+  out.swapAxes = abs(alongX_rawY) > abs(alongX_rawX);
+  Serial.printf("=> axes %s\n",
+                out.swapAxes ? "TRANSPOSED (raw Y drives screen X)"
+                             : "direct (raw X drives screen X)");
+
+  // Cross-check against the other axis. These must agree; if they do not, the
+  // taps were probably not where they were asked for.
+  const bool consistent = out.swapAxes ? (abs(alongY_rawX) > abs(alongY_rawY))
+                                       : (abs(alongY_rawY) > abs(alongY_rawX));
+  if (!consistent) {
+    Serial.println(F("Axis response is contradictory -- calibration rejected."));
+    Serial.println(F("Were all three taps on the crosses shown?"));
     return false;
   }
-  Serial.printf("target 1 (%d,%d) -> raw (%u,%u)\n", x1, y1, r1x, r1y);
 
-  drawTarget(x2, y2, "Now tap this one", 2);
-  if (!waitForTap(r2x, r2y)) {
-    Serial.println(F("No touch detected -- timed out on target 2."));
-    return false;
-  }
-  Serial.printf("target 2 (%d,%d) -> raw (%u,%u)\n", x2, y2, r2x, r2y);
-
-  // Guard against both taps landing in the same place, which would make the
-  // fit degenerate and produce a divide-by-zero mapping.
-  if (abs(static_cast<int32_t>(r2x) - r1x) < 200 ||
-      abs(static_cast<int32_t>(r2y) - r1y) < 200) {
-    Serial.println(F("Raw values too close together -- calibration rejected."));
-    Serial.println(F("Were both taps in the same place?"));
+  // Movement along each screen axis, in the raw channel assigned to it.
+  const int32_t spanAlongX = out.swapAxes ? alongX_rawY : alongX_rawX;
+  const int32_t spanAlongY = out.swapAxes ? alongY_rawX : alongY_rawY;
+  if (abs(spanAlongX) < 200 || abs(spanAlongY) < 200) {
+    Serial.println(F("Raw travel too small -- calibration rejected."));
     return false;
   }
 
-  // Linear extrapolation to the screen edges, per axis.
-  const float slopeX = static_cast<float>(r2x - r1x) / (x2 - x1);
-  const float slopeY = static_cast<float>(r2y - r1y) / (y2 - y1);
-  const float rawAtX0 = r1x - slopeX * x1;
-  const float rawAtY0 = r1y - slopeY * y1;
+  // Linear fit per screen axis, extrapolated out to the screen edges. Targets
+  // are inset from the corners because tapping the very edge of a resistive
+  // panel is both unreliable and uncomfortable.
+  const float slopeX = static_cast<float>(spanAlongX) / (xR - xL);
+  const float slopeY = static_cast<float>(spanAlongY) / (yB - yT);
+  const float baseX  = out.swapAxes ? tl.y : tl.x;
+  const float baseY  = out.swapAxes ? tl.x : tl.y;
+  const float rawAtX0   = baseX - slopeX * xL;
+  const float rawAtY0   = baseY - slopeY * yT;
   const float rawAtXMax = rawAtX0 + slopeX * (board::kScreenWidth - 1);
   const float rawAtYMax = rawAtY0 + slopeY * (board::kScreenHeight - 1);
 
   out.invertX = slopeX < 0;
   out.invertY = slopeY < 0;
   // Stored unclamped. A correct fit can extrapolate outside the controller's
-  // 0..4095 range, and clamping it distorts the mapping near that edge — the
-  // reference unit's rawMinY legitimately fits at -41. Only the wide bounds of
-  // a signed 16-bit value are enforced, purely to keep the arithmetic sane.
+  // 0..4095 range, and clamping distorts the mapping near that edge — the
+  // reference unit fits a negative value at one edge. Only the wide bounds of
+  // a signed 16-bit value are enforced, to keep the arithmetic sane.
   out.rawMinX = static_cast<int16_t>(constrain(min(rawAtX0, rawAtXMax), -4095.0f, 8190.0f));
   out.rawMaxX = static_cast<int16_t>(constrain(max(rawAtX0, rawAtXMax), -4095.0f, 8190.0f));
   out.rawMinY = static_cast<int16_t>(constrain(min(rawAtY0, rawAtYMax), -4095.0f, 8190.0f));
@@ -304,13 +373,49 @@ bool calibrate(touch::Calibration& out) {
 
   Serial.println();
   Serial.println(F("--- calibration result ---"));
+  Serial.printf("swapAxes=%s\n", out.swapAxes ? "true" : "false");
   Serial.printf("rawMinX=%d rawMaxX=%d invertX=%s\n", out.rawMinX, out.rawMaxX,
                 out.invertX ? "true" : "false");
   Serial.printf("rawMinY=%d rawMaxY=%d invertY=%s\n", out.rawMinY, out.rawMaxY,
                 out.invertY ? "true" : "false");
-  Serial.println(F("Paste these into Calibration's defaults in touch_input.h"));
-  Serial.println(F("until NVS-backed config exists."));
   return true;
+}
+
+/**
+ * Ask for a swipe in a named direction and check the decoder agrees.
+ *
+ * This exists because the previous orientation bug was invisible to every
+ * automated check and was only caught by a person noticing that swipes went
+ * the wrong way. Verifying it in firmware means the device reports the fault
+ * itself rather than depending on someone being asked the right question.
+ */
+bool verifySwipe(const char* label, touch::Gesture expected) {
+  tft.fillScreen(TFT_BLACK);
+  tft.setTextDatum(MC_DATUM);
+  tft.setTextColor(TFT_WHITE, TFT_BLACK);
+  tft.drawString("DIRECTION CHECK", board::kScreenWidth / 2,
+                 board::kScreenHeight / 2 - 34, 4);
+  tft.setTextColor(TFT_YELLOW, TFT_BLACK);
+  tft.drawString(label, board::kScreenWidth / 2, board::kScreenHeight / 2 + 2, 4);
+  tft.setTextColor(TFT_DARKGREY, TFT_BLACK);
+  tft.drawString("across the middle of the screen",
+                 board::kScreenWidth / 2, board::kScreenHeight / 2 + 34, 2);
+
+  Serial.printf("Please swipe: %s\n", label);
+
+  const uint32_t deadline = millis() + 30000;
+  while (millis() < deadline) {
+    const touch::Gesture g = touchInput.poll();
+    if (g == touch::Gesture::None) {
+      delay(8);
+      continue;
+    }
+    const bool ok = (g == expected);
+    Serial.printf("  got %s -- %s\n", gestureName(g), ok ? "PASS" : "MISMATCH");
+    return ok;
+  }
+  Serial.println(F("  timed out waiting for a swipe"));
+  return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -329,15 +434,8 @@ void drawTestScreen() {
 
 /// Show the most recent decoded gesture, so swipe thresholds can be felt out.
 void showGesture(touch::Gesture g) {
-  const char* name = nullptr;
-  switch (g) {
-    case touch::Gesture::Tap:        name = "TAP";         break;
-    case touch::Gesture::SwipeLeft:  name = "SWIPE LEFT";  break;
-    case touch::Gesture::SwipeRight: name = "SWIPE RIGHT"; break;
-    case touch::Gesture::SwipeUp:    name = "SWIPE UP";    break;
-    case touch::Gesture::SwipeDown:  name = "SWIPE DOWN";  break;
-    default: return;
-  }
+  if (g == touch::Gesture::None) return;
+  const char* name = gestureName(g);
   Serial.printf("gesture: %s\n", name);
 
   tft.setTextDatum(BC_DATUM);
@@ -418,6 +516,24 @@ void setup() {
     ledSet(true, false, false);  // Red: something needs attention.
   }
 
+  // Verify orientation in firmware rather than trusting the fit. The previous
+  // bug produced a calibration that looked perfect in every number we printed
+  // and was still rotated 90 degrees.
+  if (g_calibrated) {
+    Serial.println();
+    Serial.println(F("=== Direction check ==="));
+    const bool right = verifySwipe("SWIPE RIGHT ->", touch::Gesture::SwipeRight);
+    const bool down  = verifySwipe("SWIPE DOWN", touch::Gesture::SwipeDown);
+    if (right && down) {
+      Serial.println(F("Orientation CONFIRMED: swipes match their directions."));
+      ledSet(false, true, false);
+    } else {
+      Serial.println(F("ORIENTATION FAULT: swipes do not match directions."));
+      Serial.println(F("The axis mapping is still wrong -- do not trust it."));
+      ledSet(true, false, false);
+    }
+  }
+
   drawTestScreen();
   Serial.println();
   Serial.println(F("Touch test active. Drag to draw, tap to clear,"));
@@ -442,10 +558,12 @@ void loop() {
   static uint32_t lastAnnounce = 0;
   if (g_calibrated && millis() - lastAnnounce > 5000) {
     lastAnnounce = millis();
-    Serial.printf("CALIBRATION rawX=[%d..%d] invX=%d  rawY=[%d..%d] invY=%d\n",
-                  g_calibration.rawMinX, g_calibration.rawMaxX,
-                  g_calibration.invertX ? 1 : 0, g_calibration.rawMinY,
-                  g_calibration.rawMaxY, g_calibration.invertY ? 1 : 0);
+    Serial.printf("CALIBRATION swap=%d rawX=[%d..%d] invX=%d"
+                  " rawY=[%d..%d] invY=%d\n",
+                  g_calibration.swapAxes ? 1 : 0, g_calibration.rawMinX,
+                  g_calibration.rawMaxX, g_calibration.invertX ? 1 : 0,
+                  g_calibration.rawMinY, g_calibration.rawMaxY,
+                  g_calibration.invertY ? 1 : 0);
   }
 
   // Gesture decoding must be polled steadily or presses are missed.

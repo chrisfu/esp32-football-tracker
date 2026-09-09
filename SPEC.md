@@ -111,7 +111,9 @@ The full table is 20 rows × 9 columns (Club, MP, W, D, L, GF, GA, GD, Pts) on a
 * Drawn into a **single reusable 320×24 sprite** (15 KB) blitted row by row,
   rather than a full framebuffer. Costs 15 KB instead of 150 KB.
 * Vertical drag to scroll; our team's row is highlighted and the view opens
-  centred on it.
+  centred on it. Note the digitizer's axes are transposed relative to the
+  display (see [docs/HARDWARE.md](docs/HARDWARE.md)) — the touch layer resolves
+  this, so screens work in plain screen coordinates.
 * Club names use the **official `tla` 3-letter code** supplied by
   football-data.org (`BOL`, `WHU`, `QPR`) — no abbreviation logic needed — with
   the full name shown for the highlighted row, so the numeric columns stay
@@ -562,7 +564,8 @@ Each item is one branch, per R1.
 * [x] PlatformIO scaffold + display bring-up — panel identified as an inverted
       ILI9341 variant; 31 ms full redraw measured
 * [x] Touch driver + calibration — hand-rolled XPT2046, IRQ-based press
-      detection, two-point calibration, tap/swipe gestures all verified
+      detection, **three-point** calibration detecting the transposed axes,
+      tap/swipe gestures verified by an in-firmware direction check
 * [ ] Screen manager and auto-cycling with placeholder data
 * [ ] LittleFS, config and cache layer with atomic writes
 * [ ] Wi-Fi provisioning — SoftAP + captive portal

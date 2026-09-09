@@ -29,7 +29,13 @@ constexpr uint8_t kResultShift = 3;
 
 /// Below this pressure reading a touch is treated as noise rather than
 /// contact. Resistive panels report a small non-zero Z even when untouched.
-constexpr uint16_t kPressureThreshold = 300;
+///
+/// Set from measurement, not guesswork: the untouched baseline on this panel is
+/// Z = 1-3, while deliberate contact reads 500-1000. An earlier value of 300
+/// was seen rejecting the onset of a real touch at Z = 238, so it sat too close
+/// to light contact. 200 keeps a ~60x margin over the idle baseline while
+/// catching a light fingertip on the first sample rather than the second.
+constexpr uint16_t kPressureThreshold = 200;
 
 /// Median of three, used to discard single-sample spikes.
 uint16_t medianOfThree(uint16_t a, uint16_t b, uint16_t c) {
@@ -120,24 +126,29 @@ bool TouchInput::getRaw(uint16_t& x, uint16_t& y, uint16_t& z) {
   return sampleRaw(x, y, z);
 }
 
-int16_t TouchInput::mapRawToScreenX(uint16_t rawX, uint16_t /*rawY*/) const {
+int16_t TouchInput::mapRawToScreenX(uint16_t rawX, uint16_t rawY) const {
   const int32_t span =
       static_cast<int32_t>(calibration_.rawMaxX) - calibration_.rawMinX;
   if (span == 0) return 0;  // Degenerate calibration: fail safe, don't divide.
 
-  int32_t v = (static_cast<int32_t>(rawX) - calibration_.rawMinX) *
-              (board::kScreenWidth - 1) / span;
+  // Which raw channel feeds screen X depends on whether the digitizer is
+  // transposed relative to the display. Both channels are taken as arguments
+  // precisely so this choice lives here rather than at every call site.
+  const int32_t raw = calibration_.swapAxes ? rawY : rawX;
+
+  int32_t v = (raw - calibration_.rawMinX) * (board::kScreenWidth - 1) / span;
   if (calibration_.invertX) v = (board::kScreenWidth - 1) - v;
   return static_cast<int16_t>(constrain(v, 0, board::kScreenWidth - 1));
 }
 
-int16_t TouchInput::mapRawToScreenY(uint16_t /*rawX*/, uint16_t rawY) const {
+int16_t TouchInput::mapRawToScreenY(uint16_t rawX, uint16_t rawY) const {
   const int32_t span =
       static_cast<int32_t>(calibration_.rawMaxY) - calibration_.rawMinY;
   if (span == 0) return 0;
 
-  int32_t v = (static_cast<int32_t>(rawY) - calibration_.rawMinY) *
-              (board::kScreenHeight - 1) / span;
+  const int32_t raw = calibration_.swapAxes ? rawX : rawY;
+
+  int32_t v = (raw - calibration_.rawMinY) * (board::kScreenHeight - 1) / span;
   if (calibration_.invertY) v = (board::kScreenHeight - 1) - v;
   return static_cast<int16_t>(constrain(v, 0, board::kScreenHeight - 1));
 }

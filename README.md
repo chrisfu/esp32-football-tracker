@@ -45,7 +45,7 @@ read back **from the board itself**, not from a datasheet — see
 | PSRAM | **None** — `PKG_VERSION = 1` (D0WD has no in-package PSRAM) |
 | MAC | `20:50:0D:34:04:50` |
 | Display | 320×240 SPI, ILI9341-compatible — **inverted variant**, needs `TFT_INVERSION_ON` |
-| Touch | XPT2046 resistive on independent SPI pins — **working**, calibrated |
+| Touch | XPT2046 resistive on independent SPI pins — working; **axes transposed vs display** |
 | Extras | microSD slot (own SPI bus), RGB LED, speaker/DAC, LDR light sensor, 3 free GPIO |
 | USB bridge | **WCH CH340** (`0x1A86:0x7523`) |
 | Serial port | `/dev/cu.usbserial-2130` (macOS) |
@@ -77,6 +77,12 @@ read back **from the board itself**, not from a datasheet — see
   zeroes, because MISO is on GPIO12, a live strapping pin. Identify the panel
   visually with a test pattern instead — all-zeroes means "can't tell", not
   "wrong panel".
+* ⚠️ **The touch digitizer's axes are transposed relative to the display.**
+  Controller Y drives screen X (measured: 2910 counts vs 76 across screen X).
+  Beware that a two-point calibration on opposite corners *cannot detect this*
+  — both fits look valid — and the symptom is subtle: drawing and tapping seem
+  fine while swipes go the wrong way. Calibrate with three targets and verify
+  with a directional swipe.
 * ⚠️ **The light sensor reads a flat 0** (142 mV is just the ADC calibration
   floor), so GPIO34 is at ground and the LDR is probably not populated on this
   unit. Auto-brightness may therefore be unavailable; inactivity-based dimming
