@@ -257,19 +257,43 @@ Solution, applied to every endpoint:
 This is the single most important implementation detail in the project. It is
 what makes a no-PSRAM board viable against this API.
 
-### Cache format
+### Cache format — as built
 
-One file per data type under `/cache/`, plus a sidecar of metadata:
+One file per data type under `/cache/`, plus a single shared metadata file:
 
 ```
 /cache/standings.json     — filtered payload, compact, short keys
-/cache/meta.json          — { "standings": { "t": 1757433600, "ttl": 21600 }, ... }
+/cache/team_matches.json  — serves last result AND both form guides
+/cache/opp_matches.json
+/cache/scorers.json
+/cache/live.json
+/cache/meta.bin           — fetch time and TTL per document, 8 bytes each
 ```
+
+Metadata is **one small binary file, not a sidecar per document**: five
+documents would otherwise mean five extra files and five extra directory
+entries to hold what amounts to 40 bytes. It is mirrored in RAM at mount, so a
+freshness check touches no filesystem at all — which matters because the
+screen rotation asks about freshness constantly while data is fetched rarely.
 
 * **Compact, never pretty-printed**; short keys (`p` not `points`).
 * `t` is the fetch time as a Unix timestamp; freshness is `now - t < ttl`.
-* Written **atomically** — write `foo.json.tmp`, then rename — so a reset or
-  brownout mid-write can never leave a truncated cache that fails to parse.
+* Written **atomically** — write `foo.json.tmp`, flush, close, then rename —
+  so a reset or brownout mid-write leaves either the previous document or
+  none, never a truncated one. This matters more than it looks: cache is
+  written immediately after a network fetch, which is exactly when current
+  draw peaks and a marginal supply is most likely to sag.
+* A **short write** removes the temporary file, leaving the previous good
+  document in place — the entire reason for writing to a temporary first.
+* A document **too large for the caller's buffer is refused, not truncated**.
+  A truncated JSON document does not fail cleanly at the parser; it fails
+  confusingly, and looks like corrupt data from the API rather than a buffer
+  that was too small.
+* **Freshness needs a clock.** Before NTP, `statusOf()` reports *stale* rather
+  than guessing, so cached data is still served but a refresh is attempted when
+  possible — the safe direction to err in. Timestamps of 0 mean "unknown"
+  explicitly, so a pre-NTP stamp can never make a document look absurdly
+  fresh once the clock jumps.
 * Cache survives reboots, so a restart costs **zero** API calls.
 * On a parse failure the file is deleted and the entry marked stale, so one bad
   write cannot wedge a screen permanently.
@@ -656,7 +680,21 @@ NVS (20 KB)                    LittleFS (1472 KB)
 ```
 
 Secrets in NVS, bulk in LittleFS: a cache wipe or filesystem reformat never
-costs the user their Wi-Fi credentials.
+costs the user their Wi-Fi credentials. Settings and the quota tally live in
+**separate NVS namespaces**, so clearing the tally can never endanger the
+credentials.
+
+Touch calibration is persisted here too, as a single blob rather than seven
+keys — it is only ever read and written as a unit, and a partially-written
+calibration is meaningless.
+
+**A note on logs.** Arduino's `LittleFS.remove()` *and* `LittleFS.exists()`
+both log at ERROR level for a file that is not there, so guarding a remove with
+an exists check merely swaps one spurious error line for another. Since
+deleting a not-yet-existing file is the normal case on every first write, that
+noise appeared on every boot. The store uses POSIX `unlink()` and `stat()` on
+the mounted path instead, which are silent. Worth the small ugliness: a log
+full of harmless errors is a log nobody reads carefully.
 
 ### Partition table
 
@@ -679,7 +717,8 @@ Each item is one branch, per R1.
       tap/swipe gestures verified by an in-firmware direction check
 * [x] Screen manager and auto-cycling with placeholder data — six screens,
       swipe navigation, scrollable 24-row table, all verified on hardware
-* [ ] LittleFS, config and cache layer with atomic writes
+* [x] LittleFS, config and cache layer with atomic writes — settings in NVS,
+      documents in LittleFS, freshness metadata, on-device self-test passing
 * [ ] Wi-Fi provisioning — SoftAP + captive portal
 * [ ] Web interface with Pure CSS caching
 * [ ] Provider abstraction + football-data.org client (table, fixtures, scorers)
