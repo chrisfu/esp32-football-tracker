@@ -157,7 +157,7 @@ void LastResultScreen::draw(TFT_eSPI& tft, const model::Snapshot& d) {
   tft.drawString(when, board::kScreenWidth / 2, kContentTop + 120, 2);
 
   char detail[52];
-  snprintf(detail, sizeof(detail), "%s  -  matchday %u", f.competition,
+  snprintf(detail, sizeof(detail), "%s  -  Matchday %u", f.competition,
            f.matchday);
   tft.setTextColor(colour::kMuted, colour::kBackground);
   tft.drawString(detail, board::kScreenWidth / 2, kContentTop + 144, 2);
@@ -409,11 +409,14 @@ void TopScorerScreen::draw(TFT_eSPI& tft, const model::Snapshot& d) {
     tft.setTextColor(colour::kMuted, colour::kBackground);
     tft.drawString(sub, 28, cy + 10, 2);
 
+    // Font 4 (26 px), not Font 7. Font 7 is the 48 px seven-segment face and
+    // overflowed this 32 px row badly. It is right for a single hero figure —
+    // the live match clock — and wrong for a list.
     char goals[6];
     snprintf(goals, sizeof(goals), "%u", sc.goals);
     tft.setTextDatum(MR_DATUM);
     tft.setTextColor(colour::kAccent, colour::kBackground);
-    tft.drawString(goals, board::kScreenWidth - 8, cy, 7);
+    tft.drawString(goals, board::kScreenWidth - 10, cy, 4);
   }
 
   // League leader as context. Only worth showing alongside our own list; it

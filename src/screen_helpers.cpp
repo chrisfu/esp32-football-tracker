@@ -21,11 +21,20 @@ int16_t drawBoldString(TFT_eSPI& tft, const char* text, int16_t x, int16_t y,
 
 void drawStatBlock(TFT_eSPI& tft, int16_t cx, int16_t cy, const char* label,
                    const char* value, uint16_t valueColour) {
+  // Offsets are derived from the font heights rather than eyeballed. Font 2 is
+  // 16 px and Font 7 is 48 px, and MC_DATUM centres both vertically on the y
+  // given — so with the original -20/+10 the label occupied cy-28..cy-12 and
+  // the value cy-14..cy+34, overlapping by two pixels. These offsets leave a
+  // 6 px gap instead.
+  constexpr int16_t kLabelHalf = 8;   // Font 2: 16 px tall.
+  constexpr int16_t kValueHalf = 24;  // Font 7: 48 px tall.
+  constexpr int16_t kGap       = 6;
+
   tft.setTextDatum(MC_DATUM);
   tft.setTextColor(colour::kMuted, colour::kBackground);
-  tft.drawString(label, cx, cy - 20, 2);
+  tft.drawString(label, cx, cy - kValueHalf - kGap - kLabelHalf + 12, 2);
   tft.setTextColor(valueColour, colour::kBackground);
-  tft.drawString(value, cx, cy + 10, 7);
+  tft.drawString(value, cx, cy + 12, 7);
 }
 
 void formatScore(const model::Fixture& f, char* out, size_t len) {
