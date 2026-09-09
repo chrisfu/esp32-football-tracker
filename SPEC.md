@@ -62,6 +62,7 @@ drive design:
 | Secrets | **NVS** via `Preferences` | Survives a filesystem format; keeps credentials out of the cache area and out of git |
 | JSON | **ArduinoJson v7** with streaming + deserialisation filters | The only way to parse a 100 KB standings response in <200 KB RAM (§5) |
 | Web server | Built-in synchronous `WebServer` | Config UI is low-traffic; async adds flash and a second task's stack for no benefit here. Revisit if OTA upload proves slow |
+| Data providers | **Two free APIs behind a provider abstraction** | Neither free tier alone covers the brief; their gaps are complementary (§6) |
 | Time | NTP + POSIX TZ | Needed for match countdowns and the midnight GMT quota reset |
 | Discovery | mDNS | Reach the device at a name instead of hunting for its IP |
 
@@ -91,13 +92,13 @@ the rotation rather than shown empty.
 
 | # | Screen | Data source | Notes |
 |---|---|---|---|
-| 1 | **Live match** | `/fixtures?id=` | Only in rotation while a match is actually in progress. Score, minute, scorers, cards |
-| 2 | **Season record** | `/teams/statistics` | W/D/L rate for the season, plus form string |
-| 3 | **Last result** | `/fixtures?team=&last=1` | Opponent, score, competition, date |
-| 4 | **Next fixture** | `/fixtures?team=&next=1` | Opponent, competition, kick-off in local time, live countdown |
-| 5 | **League table** | `/standings` | Scrollable — see below |
-| 6 | **Top scorer** | `/players/topscorers` | Goals, appearances; league-wide and our team's best |
-| 7 | **Injuries** | `/injuries` | Player, reason, expected return |
+| 1 | **Live match** | api-sports `live=all` | Only in rotation while a match is in progress. Score, minute, scorers, cards |
+| 2 | **Season record** | *derived from the table* | W/D/L for the season — costs no extra request |
+| 3 | **Last result** | football-data `teams/{id}/matches` | Opponent, score, competition, date |
+| 4 | **Next fixture** | football-data `teams/{id}/matches` | Opponent, competition, kick-off local time, live countdown |
+| 5 | **League table** | football-data `standings` | Scrollable — see below |
+| 6 | **Top scorer** | football-data `scorers` | Goals, appearances; league-wide and our team's best |
+| 7 | ~~Injuries~~ | — | **Deferred** — unavailable on either free tier (§6) |
 
 ### 4.5 League table rendering
 
@@ -108,8 +109,11 @@ The full table is 20 rows × 9 columns (Club, MP, W, D, L, GF, GA, GD, Pts) on a
   rather than a full framebuffer. Costs 15 KB instead of 150 KB.
 * Vertical drag to scroll; our team's row is highlighted and the view opens
   centred on it.
-* Club names are abbreviated to a 3-letter code with the full name shown for
-  the highlighted row, so the numeric columns stay aligned and readable.
+* Club names use the **official `tla` 3-letter code** supplied by
+  football-data.org (`BOL`, `WHU`, `QPR`) — no abbreviation logic needed — with
+  the full name shown for the highlighted row, so the numeric columns stay
+  aligned and readable.
+* The Championship has **24 teams**, so about 3 screens' worth of scrolling.
 
 ---
 
@@ -258,29 +262,136 @@ The irony is neat and useful: **api-sports gives away the live data that most
 providers charge for, and withholds the static tables that most providers give
 away.** That points directly at a hybrid (see below).
 
-### Candidate resolutions
+### Decision: hybrid across two free providers
 
-**Open decision — see §13.** The options, with the trade-off each carries:
+**Decided.** Neither free tier alone covers the brief, but their gaps are almost
+perfectly complementary, so we use both behind a single abstraction.
 
-1. **Hybrid, two free APIs (recommended).** Keep api-sports free for live match
-   polling, and add [football-data.org](https://www.football-data.org) free for
-   current-season league table and full fixture schedule. Its free tier covers
-   **12 competitions including the Championship**, allows **10 calls/minute with
-   no documented daily cap**, and serves fixtures and league tables — precisely
-   api-sports' gaps. Costs one extra free registration and a second API client;
-   in exchange the 100/day budget stops being the binding constraint, because
-   only live polling draws on it.
-   *Caveat:* football-data.org's free tier gives **delayed** scores and puts
-   per-match goal scorers behind a paid add-on, which is exactly why we keep
-   api-sports for live.
-2. **Pay for api-sports.** One API, every screen as originally specified, no
-   architectural compromise. Recurring cost.
-3. **Free tier as-is.** Live match and today/tomorrow fixtures work properly;
-   table, season record and top scorer show **2024 data clearly labelled as
-   historical**. Cheapest, but three of seven screens stop being useful.
+| Provider | Supplies | Auth header | Limits |
+|---|---|---|---|
+| **api-sports v3** | Live match only — score, minute, goalscorers, cards | `x-apisports-key` | 100/day, 10/min |
+| **football-data.org v4** | Current-season league table, fixture schedule, season record, top scorer | `X-Auth-Token` | 10/min, **no documented daily cap** |
 
-**Injuries look unavailable on any free tier** for the Championship, so that
-screen is likely to be dropped or gated behind a paid plan regardless.
+Rationale: api-sports uniquely gives away current live data on its free tier,
+which football-data.org charges for (its free scores are *delayed*).
+football-data.org uniquely gives away current-season tables and full fixture
+lists, which api-sports blocks below 2022–2024. Using each for its strength
+costs one extra free registration and gets every screen but injuries onto
+current-season data.
+
+**A free registered key is mandatory for football-data.org.** Anonymous access
+was tested and returns `403 restricted` for `/competitions/ELC`,
+`/competitions/ELC/standings` *and* `/competitions/PL/standings` — the anonymous
+tier's 50 requests/day are useless for our purposes. Register at
+<https://www.football-data.org/client/register>.
+
+### ✅ Hybrid verified end to end (2026-09-09)
+
+All of the above is confirmed against the live account, not assumed:
+
+| Check | Result |
+|---|---|
+| Key authenticates | ✅ `X-Authenticated-Client: Chris` |
+| Championship on free tier | ✅ `ELC` → "Championship", current season 2026-08-14 → 2027-05-01, matchday 6 |
+| `/competitions/ELC/standings` | ✅ **24 rows** in just **6.7 KB** |
+| `/teams/60/matches?status=SCHEDULED&limit=1` | ✅ Bolton v Cardiff, 2026-09-12 11:30 UTC, matchday 7 — 1.2 KB |
+| `/teams/60/matches?status=FINISHED&limit=1` | ✅ Bolton 2-3 West Ham, 2026-09-08, `winner: AWAY_TEAM` — 1.3 KB |
+| `/competitions/ELC/scorers?limit=3` | ✅ works — 2.2 KB |
+| Rate headers | `x-requests-available-minute`, `X-RequestCounter-Reset` (60 s) |
+
+### 🚩 The two providers use different team id spaces
+
+**Bolton Wanderers is `68` on api-sports and `60` on football-data.org.**
+
+Worse, **football-data.org id `68` is Norwich City** — so transposing the two ids
+does not fail loudly, it silently displays another club's data. Mitigations:
+
+* Ids are stored under provider-qualified NVS keys (`team.apisports.id`,
+  `team.footballdata.id`), never a single `team.id`.
+* The provider interface takes its own id type, so the compiler helps.
+* Each provider's client asserts the team name it gets back matches the
+  configured team, and raises a config error rather than displaying wrong data.
+
+### Free-tier data quirks worth coding around
+
+* **`status=SCHEDULED` returns matches whose actual status is `TIMED`.** Do not
+  filter on `status == "SCHEDULED"` client-side or the next fixture vanishes.
+* **`assists` is `null`** on the scorers endpoint — that field is behind the paid
+  "Deep Data" add-on. The top scorer screen shows goals and appearances only.
+* **`limit=1` ordering is not documented.** The finished-matches probe returned
+  matchday 6 (the most recent) rather than matchday 1, so it appears to favour
+  the latest — but we do not rely on it: fetch a small window with
+  `dateFrom`/`dateTo` and sort locally.
+* Payloads are **1–7 KB**, an order of magnitude smaller than api-sports'
+  ~100 KB standings. The streaming-and-filtering machinery (§5) is therefore
+  critical only for api-sports' `live=all` response; football-data responses fit
+  comfortably in RAM. We keep the streaming path for both anyway — it costs
+  nothing to reuse and removes a class of failure.
+* **The `tla` field gives an official 3-letter code per club** (`BOL`, `WHU`,
+  `QPR`). This is exactly what the league table screen needs for its abbreviated
+  club column, so we do **not** need to generate abbreviations ourselves (§4.5).
+
+### The Championship has 24 teams, not 20
+
+Noted because it changes the table screen: 24 rows to scroll rather than 20, and
+Bolton currently sit 22nd, so **opening the table centred on our team matters
+more than it would for a mid-table side** — a naive top-of-table render would
+show a Bolton fan nothing they care about.
+
+### Provider abstraction
+
+Screens never know which provider served them. A thin interface sits behind the
+cache so a provider can be swapped, or a paid key dropped in, without touching
+any screen code:
+
+```
+Screens ─→ Cache (LittleFS) ─→ Provider interface
+                                 ├── ApiSports        live match
+                                 └── FootballDataOrg  table, fixtures, scorers
+```
+
+This is deliberate insurance. Both free tiers have already proven their
+documentation unreliable, so we assume either could change under us.
+
+### Endpoint map
+
+| Screen | Provider | Request |
+|---|---|---|
+| Live match | api-sports | `/fixtures?live=all`, filtered to our team locally |
+| League table | football-data | `/competitions/ELC/standings` |
+| Season record | football-data | **free — reuses the standings response** (see below) |
+| Next fixture | football-data | `/teams/60/matches?status=SCHEDULED` |
+| Last result | football-data | `/teams/60/matches?status=FINISHED` |
+| Top scorer | football-data | `/competitions/ELC/scorers` (current season only) |
+| Injuries | — | **Not available on either free tier** (§ below) |
+
+**Season record costs zero extra calls.** The standings response already carries
+`playedGames`, `won`, `draw`, `lost`, `goalsFor`, `goalsAgainst`,
+`goalDifference` and `points` per team — so screen 2 is derived from our team's
+row in the table we already fetched for screen 5. One request serves two screens.
+
+### Injuries: deferred
+
+`/injuries?team=68&season=2024` on api-sports returns **0 rows** for a
+Championship side, and football-data.org's free tier has no injuries endpoint at
+all. The screen is **deferred rather than dropped**: the screen manager already
+skips any screen with no valid data (§4), so the feature can appear later behind
+a paid plan with no rework. Removed from the near-term roadmap.
+
+### Revised budget
+
+Splitting the load transforms the api-sports picture, because it now serves
+*only* the live screen:
+
+| Scenario | api-sports (of 100/day) | football-data (10/min, no daily cap) |
+|---|---|---|
+| Idle day, no match | **0** | ~6 — table 4, fixtures 2 |
+| Match day | **~40** — adaptive polling per §6 | ~8 |
+
+The 100/day limit stops being the binding constraint. All the rationing
+machinery in §6 stays — it now protects a budget we comfortably fit inside,
+which is the right place to be. The per-minute limits become the live concern,
+so the client enforces minimum call spacing per provider.
 
 ### `/status` under-reports — trust the headers
 
@@ -421,8 +532,9 @@ power meter before and after each change, recorded in this document.
 ```
 NVS (20 KB)                    LittleFS (1472 KB)
 ├── wifi.ssid / wifi.pass      ├── /config.json      screens, dwell, brightness
-├── api.key                    ├── /cache/*.json     filtered API payloads
-├── team.id / league.id        ├── /cache/meta.json  fetch times and TTLs
+├── apisports.key              ├── /cache/*.json     filtered API payloads
+├── footballdata.key           ├── /cache/meta.json  fetch times and TTLs
+├── team.id / league.code      │
 ├── api.count / api.day        ├── /www/pure-min.css downloaded once
 └── screens.mask               └── /crests/*.raw     optional, else SD
 ```
@@ -450,8 +562,9 @@ Each item is one branch, per R1.
 * [ ] LittleFS, config and cache layer with atomic writes
 * [ ] Wi-Fi provisioning — SoftAP + captive portal
 * [ ] Web interface with Pure CSS caching
-* [ ] API client — streaming parse, filters, budget enforcement
-* [ ] The seven real screens
+* [ ] Provider abstraction + football-data.org client (table, fixtures, scorers)
+* [ ] api-sports client — streaming parse, filters, budget enforcement
+* [ ] The six real screens
 * [ ] Live match polling with adaptive scheduling
 * [ ] Hardware extras — LDR, RGB LED, speaker
 * [ ] Power optimisation phase, with measurements
@@ -480,8 +593,9 @@ Not committed, recorded so they are not lost:
   "Bolton Wanderers". Overridable in the web UI.
 * **Which competitions** — league first, with cups as a toggleable option
   (decided). Cups cost extra API calls, so the toggle defaults to off.
-* **🚩 Data source strategy — blocking.** The free api-sports tier cannot serve
-  the current season for the table, season record or top scorer (§6). Choose
-  between the hybrid, paying, or accepting historical data. Everything from the
-  API client onward depends on this.
+* ~~Data source strategy~~ — **decided: hybrid across two free providers** (§6).
+* ~~Needs a football-data.org key~~ — **supplied and verified** (§6).
+* ~~Unverified: `ELC`, free Championship coverage, Bolton's id~~ — **all
+  confirmed**: `ELC` is correct, the Championship is on the free tier, and
+  Bolton is football-data id **60** (api-sports **68**).
 * **Touch quality** — resistive panels vary; calibration may need a UI flow.
