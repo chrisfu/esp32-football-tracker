@@ -208,13 +208,89 @@ A local count in NVS remains as the **pre-flight** check — we must decide whet
 we can afford a call *before* making it — but it is corrected to the server's
 figure after every response.
 
-### Verified coverage
+### ⚠️ Verified coverage — the free tier is far more restricted than documented
 
-Checked against the live API for the Premier League: seasons **2010–2026** are
-all accessible on the free plan (the current season is 2026, running
-2026-08-21 → 2027-05-30), with coverage flags confirming `standings`,
-`top_scorers`, `injuries`, and fixture `events` and `lineups`. **The free tier
-imposes no season restriction** — every screen in §4 is supported.
+**This supersedes an earlier, incorrect entry in this spec.** The `/leagues`
+endpoint happily reports seasons 2010–2026 with full coverage flags for
+`standings`, `top_scorers` and `injuries`. That metadata describes seasons that
+**exist**, not seasons the plan may **query**. Probing the actual data endpoints
+tells a very different story.
+
+Probe results against the live account (2026-09-09):
+
+| Request | Result |
+|---|---|
+| `/leagues?id=39` | ✅ lists seasons 2010–2026 — **misleading** |
+| `/standings?league=40&season=2024` | ✅ works |
+| `/players/topscorers?league=40&season=2024` | ✅ works, 20 rows |
+| `/injuries?team=68&season=2024` | ✅ endpoint allowed, but **0 rows** for a Championship side |
+| `/fixtures?live=all` | ✅ **works, returns present-day live matches** |
+| `/standings?league=40&season=2026` | ❌ `Free plans do not have access to this season, try from 2022 to 2024` |
+| `/leagues?team=68&season=2026` | ❌ same season block |
+| `/fixtures?team=68&next=1` | ❌ `Free plans do not have access to the Next parameter` |
+| `/fixtures?team=68&season=2024&last=3` | ❌ `Free plans do not have access to the Last parameter` |
+| `/fixtures?team=68&date=2026-09-13` | ❌ `Free plans do not have access to this date, try from 2026-09-08 to 2026-09-10` |
+| `/fixtures?team=68` | ❌ `The Season field is required` |
+
+So the free tier's real shape is:
+
+* **Season-parameter queries are locked to 2022–2024.** The current season
+  (2026) is unreachable for standings, top scorers and team statistics.
+* **The `next` and `last` parameters are blocked entirely**, so "next fixture"
+  and "last result" cannot be asked for directly at any season.
+* **Date queries are clamped to a ±1 day window around today.** We can ask about
+  yesterday, today and tomorrow — nothing further out.
+* **But `live=all` works and returns genuinely current in-play matches.**
+
+### What this means for the screens
+
+| Screen | Free tier, current season |
+|---|---|
+| Live match | ✅ available via `live=all` |
+| Next fixture | ⚠️ only if it is today or tomorrow |
+| Last result | ⚠️ only if it was yesterday or today |
+| League table | ❌ current season blocked (2024 available) |
+| Season record | ❌ current season blocked |
+| Top scorer | ❌ current season blocked (2024 available) |
+| Injuries | ❌ no Championship data even on allowed seasons |
+
+The irony is neat and useful: **api-sports gives away the live data that most
+providers charge for, and withholds the static tables that most providers give
+away.** That points directly at a hybrid (see below).
+
+### Candidate resolutions
+
+**Open decision — see §13.** The options, with the trade-off each carries:
+
+1. **Hybrid, two free APIs (recommended).** Keep api-sports free for live match
+   polling, and add [football-data.org](https://www.football-data.org) free for
+   current-season league table and full fixture schedule. Its free tier covers
+   **12 competitions including the Championship**, allows **10 calls/minute with
+   no documented daily cap**, and serves fixtures and league tables — precisely
+   api-sports' gaps. Costs one extra free registration and a second API client;
+   in exchange the 100/day budget stops being the binding constraint, because
+   only live polling draws on it.
+   *Caveat:* football-data.org's free tier gives **delayed** scores and puts
+   per-match goal scorers behind a paid add-on, which is exactly why we keep
+   api-sports for live.
+2. **Pay for api-sports.** One API, every screen as originally specified, no
+   architectural compromise. Recurring cost.
+3. **Free tier as-is.** Live match and today/tomorrow fixtures work properly;
+   table, season record and top scorer show **2024 data clearly labelled as
+   historical**. Cheapest, but three of seven screens stop being useful.
+
+**Injuries look unavailable on any free tier** for the Championship, so that
+screen is likely to be dropped or gated behind a paid plan regardless.
+
+### `/status` under-reports — trust the headers
+
+`/status` reported `2 / 100` used after six successful billable calls, so it
+appears to be cached or lagging server-side. The per-response
+`x-ratelimit-requests-remaining` header tracked correctly throughout.
+
+**Therefore: reconcile the local counter from response headers, and treat
+`/status` as advisory only** — useful for plan detection on boot, not for
+budget enforcement. This reverses the reconciliation source implied earlier.
 
 ### Daily budget
 
@@ -398,7 +474,14 @@ Not committed, recorded so they are not lost:
 
 * **Panel controller** — ILI9341 assumed; confirmed on first display bring-up.
   See the warning in [docs/HARDWARE.md](docs/HARDWARE.md).
-* **Team choice** — a default team needs picking; overridable in the web UI.
-* **Which competitions** — league only at first, or cups too? Cups mean extra
-  API calls, so this is a budget decision.
+* ~~Team choice~~ — **decided: Bolton Wanderers**, api-sports team `id=68`
+  (founded 1874, Toughsheet Community Stadium). Note the API returns the name as
+  plain `"Bolton"`, so the UI needs a display-name override to show
+  "Bolton Wanderers". Overridable in the web UI.
+* **Which competitions** — league first, with cups as a toggleable option
+  (decided). Cups cost extra API calls, so the toggle defaults to off.
+* **🚩 Data source strategy — blocking.** The free api-sports tier cannot serve
+  the current season for the table, season record or top scorer (§6). Choose
+  between the hybrid, paying, or accepting historical data. Everything from the
+  API client onward depends on this.
 * **Touch quality** — resistive panels vary; calibration may need a UI flow.

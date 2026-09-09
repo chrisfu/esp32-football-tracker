@@ -5,9 +5,13 @@ A football (soccer) statistics display for the ESP32 **"Cheap Yellow Display"**
 scores, results, fixtures, the league table, top scorers and injuries — all
 configured from a built-in web interface, with a first-boot Wi-Fi setup portal.
 
+Default team is **Bolton Wanderers** (English Championship), configurable from
+the web UI.
+
 Built against the [API-Sports football API](https://v3.football.api-sports.io)
 free tier, which allows **100 requests per day** — so the design is
-aggressively cache-first and budget-aware.
+aggressively cache-first and budget-aware. Note that the free tier turns out to
+carry [significant undocumented restrictions](#-the-free-tier-is-more-restricted-than-its-own-metadata-suggests).
 
 > **Status:** early development. Hardware discovery complete; firmware bring-up
 > next. See [SPEC.md](SPEC.md) for the design and [the roadmap](SPEC.md#11-roadmap)
@@ -102,13 +106,30 @@ headers:
 
 Because every response reports the remaining quota, the device reconciles its
 own counter against the server's figure rather than trusting a local tally that
-could drift. Season coverage was checked against the live account: **2010–2026
-are all available on the free plan**, including the current season, with
-standings, top scorers, injuries and fixture events all covered.
+could drift. (`/status` proved unreliable for this — it reported 2 of 100 used
+after six billable calls, so the headers are the source of truth.)
 
-Usage is tracked and displayed in the web interface. See
-[the API budget section](SPEC.md#6-api-budget-rule-r7) for the full rationing
-strategy.
+### ⚠️ The free tier is more restricted than its own metadata suggests
+
+`/leagues` advertises seasons 2010–2026 with full coverage flags. That describes
+seasons which *exist*, not seasons the plan may *query*. Probing the real data
+endpoints found:
+
+- **Season queries are locked to 2022–2024** — the current season is
+  unreachable for standings, top scorers and team statistics
+- **The `next` and `last` fixture parameters are blocked outright**
+- **Date queries are clamped to roughly ±1 day around today**
+- **But `live=all` works and returns genuinely current in-play matches**
+
+Which is a curious inversion: this API gives away the live data most providers
+charge for, and withholds the static tables most providers hand out free. So the
+live-match screen works well, while the league table, season record and top
+scorer need another source for current-season data.
+
+Resolving this is an open decision — the options and their trade-offs are in
+[the API coverage section](SPEC.md#6-api-budget-rule-r7), along with the full
+probe matrix and the rationing strategy. Usage is tracked and displayed in the
+web interface.
 
 ## Licence
 
