@@ -200,6 +200,17 @@ Gesture TouchInput::poll() {
   if (down) {
     lastX_ = x;
     lastY_ = y;
+
+    // Long press: held long enough, and still roughly where it started. The
+    // movement check matters because a slow drag across the league table would
+    // otherwise trip it.
+    if (!longPressFired_ && millis() - pressStart_ >= kLongPressMs &&
+        abs(lastX_ - startX_) <= kTapSlop &&
+        abs(lastY_ - startY_) <= kTapSlop) {
+      longPressFired_ = true;
+      tapPending_     = false;  // Not a tap; do not emit one later.
+      return Gesture::LongPress;
+    }
     return Gesture::None;
   }
 
@@ -209,6 +220,13 @@ Gesture TouchInput::poll() {
   // --- Release: decode what just happened ---------------------------------
   tracking_    = false;
   lastRelease_ = millis();
+
+  // A long press already fired on the way down; the release adds nothing and
+  // must not also register as a tap.
+  if (longPressFired_) {
+    longPressFired_ = false;
+    return Gesture::None;
+  }
 
   // A finger resting on the panel is not a gesture. Rejecting long presses
   // here also stops a slow drag on the league table registering as a swipe

@@ -84,6 +84,7 @@ enum class Gesture : uint8_t {
   None,
   Tap,         ///< A single press and release, confirmed not to be a double.
   DoubleTap,   ///< Two taps in quick succession.
+  LongPress,   ///< Held in one place for over two seconds.
   SwipeLeft,   ///< Next screen.
   SwipeRight,  ///< Previous screen.
   SwipeUp,     ///< Scroll down within a screen (e.g. the league table).
@@ -130,6 +131,15 @@ class TouchInput {
    */
   Gesture poll();
 
+  /**
+   * Where the most recent gesture happened, in screen pixels.
+   *
+   * Needed for anything with on-screen buttons: swipe navigation needs only a
+   * direction, but a menu has to know *what* was tapped.
+   */
+  int16_t gestureX() const { return lastX_; }
+  int16_t gestureY() const { return lastY_; }
+
   const Calibration& calibration() const { return calibration_; }
   void setCalibration(const Calibration& c) { calibration_ = c; }
 
@@ -168,13 +178,24 @@ class TouchInput {
   /// A tap awaiting confirmation that it is not the first half of a double.
   bool     tapPending_   = false;
   uint32_t tapPendingAt_ = 0;
+  /// Set once a long press has fired, so the following release is swallowed
+  /// rather than also being reported as a tap.
+  bool     longPressFired_ = false;
 
   /// Movement below this is a tap, not a swipe (pixels).
   static constexpr int16_t kTapSlop = 24;
   /// Movement above this along an axis counts as a swipe (pixels).
   static constexpr int16_t kSwipeMin = 55;
-  /// Presses longer than this are ignored as gestures (a resting finger).
+  /// Presses longer than this are not taps or swipes (a resting finger).
   static constexpr uint32_t kMaxGestureMs = 1200;
+  /**
+   * Hold this long, without moving, to trigger a long press.
+   *
+   * Fires while the finger is still down rather than on release, so there is
+   * immediate feedback — waiting for a lift would leave the user unsure
+   * whether the hold had registered.
+   */
+  static constexpr uint32_t kLongPressMs = 2000;
   /// Ignore re-presses within this window to absorb release chatter.
   static constexpr uint32_t kDebounceMs = 45;
   /**

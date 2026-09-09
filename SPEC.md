@@ -636,6 +636,40 @@ Adaptive live polling, so a 2-hour match does not eat the day:
 
 ---
 
+## 6b. On-device settings menu
+
+Opened by a **long press** (two seconds). A modal mode, not a screen in the
+carousel: while it is open the rotation is suspended and touch means "press a
+button" rather than "navigate".
+
+**Scope is deliberately narrow.** Anything requiring typing belongs in the web
+interface — a resistive panel is a poor keyboard — so this offers only what has
+to work when the web UI *cannot* be reached:
+
+| Page | Purpose |
+|---|---|
+| **Device info** | Read-only: network, **IP address**, web UI address, signal, team, clock, API calls today, free memory |
+| **How to use** | On-device gesture help, for someone who has never used it |
+| **Reset Wi-Fi** | Recovers a device joined to a network that no longer exists |
+| **Factory reset** | Erases credentials, settings and cache |
+| **Back to screens** | Returns to the carousel |
+
+The address on the Device info page is the point of the whole menu: it is how
+the user gets to the web interface to change anything substantial.
+
+**Both resets are confirmed** on a dedicated page with "Yes, do it" / "Go back".
+The safe option is placed *below* the destructive one, so a stray tap lands on
+the harmless choice.
+
+**Every page has more than one way out**, because being stranded in a menu on a
+device with no buttons would be unrecoverable short of a power cycle:
+a Back button, a right-swipe (matching the carousel's own navigation), and a
+long press anywhere — the same gesture that opened it.
+
+Destructive actions are returned to the caller as an enum rather than executed
+inside the menu, so the menu stays a pure UI component with no power to reboot
+the device by itself.
+
 ## 7. Web interface
 
 Served from the device; reachable by mDNS. Purpose: configuration, and honest
@@ -811,6 +845,8 @@ Each item is one branch, per R1.
       NTP with UK DST, mDNS at `football.local`
 * [x] Web interface skeleton — embedded gzipped Pure CSS, setup portal,
       dashboard showing quota and cache state
+* [x] On-device settings menu — long press, device info, how-to-use, guarded
+      Wi-Fi and factory resets
 * [ ] Web interface settings pages — team, screens, dwell, brightness, cache
 * [ ] Provider abstraction + football-data.org client (table, fixtures, scorers)
 * [ ] api-sports client — streaming parse, filters, budget enforcement

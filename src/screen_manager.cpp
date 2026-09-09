@@ -71,6 +71,14 @@ void ScreenManager::advance(int8_t direction) {
   showIndex(target);
 }
 
+void ScreenManager::refresh() {
+  if (tft_ == nullptr || count_ == 0) return;
+  tft_->fillScreen(colour::kBackground);
+  drawChrome();
+  redrawContent();
+  shownAt_ = millis();
+}
+
 void ScreenManager::drawChrome() {
   // Header: screen title, and the competition on the right for context.
   tft_->fillRect(0, 0, board::kScreenWidth, kHeaderHeight, colour::kHeaderBg);
@@ -138,14 +146,16 @@ void ScreenManager::handleGesture(touch::Gesture gesture) {
   }
 
   switch (gesture) {
+    // Swiping navigates but does NOT pin. Auto-pinning on a swipe meant
+    // browsing the screens silently stopped the rotation, which then had to be
+    // undone deliberately — surprising, and easy to trigger without noticing.
+    // Resetting the dwell is enough: it gives a full period to read the screen
+    // just arrived at, without changing the device's mode behind the user's
+    // back. Holding is now only ever an explicit double tap.
     case touch::Gesture::SwipeLeft:
-      // Deliberate navigation pins the rotation: having the screen move on by
-      // itself moments after someone chose one is the wrong behaviour.
-      pinned_ = true;
       advance(+1);
       break;
     case touch::Gesture::SwipeRight:
-      pinned_ = true;
       advance(-1);
       break;
     case touch::Gesture::DoubleTap:
