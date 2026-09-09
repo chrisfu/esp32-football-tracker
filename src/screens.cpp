@@ -129,7 +129,21 @@ void SeasonRecordScreen::draw(TFT_eSPI& tft, const model::Snapshot& d) {
   snprintf(standing, sizeof(standing), "%u pts  -  %uth  -  GD %+d",
            us->points, us->position, us->goalDifference);
   tft.setTextColor(colour::kMuted, colour::kBackground);
-  tft.drawString(standing, board::kScreenWidth / 2, kContentTop + 144, 2);
+  tft.drawString(standing, board::kScreenWidth / 2, kContentTop + 140, 2);
+
+  // Our own form. Taken from whichever fixture we appear in, since form is
+  // derived per club rather than stored per table row.
+  const char* ourForm = nullptr;
+  if (d.nextFixture.valid) {
+    ourForm = d.nextFixture.weAreHome ? d.nextFixture.homeForm
+                                      : d.nextFixture.awayForm;
+  } else if (d.lastResult.valid) {
+    ourForm = d.lastResult.weAreHome ? d.lastResult.homeForm
+                                     : d.lastResult.awayForm;
+  }
+  if (ourForm != nullptr && ourForm[0] != '\0') {
+    drawFormChips(tft, ourForm, board::kScreenWidth / 2, kContentTop + 168);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -170,24 +184,37 @@ void LastResultScreen::draw(TFT_eSPI& tft, const model::Snapshot& d) {
 void NextFixtureScreen::draw(TFT_eSPI& tft, const model::Snapshot& d) {
   const model::Fixture& f = d.nextFixture;
 
-  drawFixtureHeadline(tft, f, kContentTop + 34, "v", colour::kMuted);
+  drawFixtureHeadline(tft, f, kContentTop + 22, "v", colour::kMuted);
+
+  // Form guides, one under each club, on the same side as its name. Only
+  // labelled once, centrally, since two identical captions would be noise.
+  const int16_t formY = kContentTop + 54;
+  const int16_t leftCx  = board::kScreenWidth / 4;
+  const int16_t rightCx = board::kScreenWidth - board::kScreenWidth / 4;
+  if (f.homeForm[0] != '\0' || f.awayForm[0] != '\0') {
+    tft.setTextDatum(MC_DATUM);
+    tft.setTextColor(colour::kMuted, colour::kBackground);
+    tft.drawString("FORM", board::kScreenWidth / 2, formY, 1);
+    drawFormChips(tft, f.homeForm, leftCx, formY);
+    drawFormChips(tft, f.awayForm, rightCx, formY);
+  }
 
   char countdown[24];
   formatCountdown(f.kickoffUtc, countdown, sizeof(countdown));
   tft.setTextDatum(MC_DATUM);
   tft.setTextColor(colour::kAccent, colour::kBackground);
-  tft.drawString(countdown, board::kScreenWidth / 2, kContentTop + 84, 4);
+  tft.drawString(countdown, board::kScreenWidth / 2, kContentTop + 92, 4);
 
   char when[40];
   formatKickoff(f.kickoffUtc, when, sizeof(when));
   tft.setTextColor(colour::kPrimary, colour::kBackground);
-  tft.drawString(when, board::kScreenWidth / 2, kContentTop + 120, 2);
+  tft.drawString(when, board::kScreenWidth / 2, kContentTop + 126, 2);
 
   char detail[52];
   snprintf(detail, sizeof(detail), "%s  -  %s", f.competition,
            f.weAreHome ? "HOME" : "AWAY");
   tft.setTextColor(colour::kMuted, colour::kBackground);
-  tft.drawString(detail, board::kScreenWidth / 2, kContentTop + 144, 2);
+  tft.drawString(detail, board::kScreenWidth / 2, kContentTop + 148, 2);
 }
 
 // ---------------------------------------------------------------------------

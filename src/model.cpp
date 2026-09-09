@@ -139,6 +139,8 @@ void loadPlaceholder(Snapshot& out) {
     f.matchday   = 6;
     f.weAreHome  = true;
     f.valid      = true;
+    setField(f.homeForm, "DLLLL");
+    setField(f.awayForm, "WWDWD");
   }
 
   // --- Next fixture: Bolton v Cardiff, 12 Sep 2026 ------------------------
@@ -154,6 +156,11 @@ void loadPlaceholder(Snapshot& out) {
     f.matchday   = 7;
     f.weAreHome  = true;
     f.valid      = true;
+    // Derived from each club's finished matches, oldest first. Bolton took a
+    // win on matchday 1 then D,L,L,L,L; Cardiff D,D,D,L,L,D. Both tally with
+    // their table rows, which is the check that the derivation is right.
+    setField(f.homeForm, "DLLLL");
+    setField(f.awayForm, "DDLLD");
   }
 
   // --- Live match ---------------------------------------------------------
