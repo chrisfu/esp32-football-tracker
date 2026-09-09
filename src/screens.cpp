@@ -69,24 +69,145 @@ void drawFixtureHeadline(TFT_eSPI& tft, const model::Fixture& f, int16_t y,
 // Live match
 // ---------------------------------------------------------------------------
 
+namespace {
+
+/// Draw the marker for one event kind, centred on (cx, cy).
+///
+/// Shape and colour together rather than colour alone: a card is a rectangle
+/// and a goal a circle, so the two remain distinguishable to someone who
+/// cannot easily separate red from green.
+void drawEventMarker(TFT_eSPI& tft, model::EventKind kind, int16_t cx,
+                     int16_t cy) {
+  switch (kind) {
+    case model::EventKind::Goal:
+      tft.fillCircle(cx, cy, 4, colour::kWin);
+      break;
+    case model::EventKind::Penalty:
+      // A goal, with a mark in the middle to say it came from the spot.
+      tft.fillCircle(cx, cy, 4, colour::kWin);
+      tft.drawPixel(cx, cy, TFT_BLACK);
+      tft.drawPixel(cx - 1, cy, TFT_BLACK);
+      tft.drawPixel(cx + 1, cy, TFT_BLACK);
+      break;
+    case model::EventKind::OwnGoal:
+      tft.fillCircle(cx, cy, 4, colour::kLoss);
+      break;
+    case model::EventKind::YellowCard:
+      tft.fillRect(cx - 2, cy - 4, 5, 8, colour::kDraw);
+      break;
+    case model::EventKind::RedCard:
+      tft.fillRect(cx - 2, cy - 4, 5, 8, colour::kLoss);
+      break;
+    default:
+      tft.drawPixel(cx, cy, colour::kMuted);
+      break;
+  }
+}
+
+/// Suffix marking an event that needs a word of explanation.
+const char* eventSuffix(model::EventKind kind) {
+  switch (kind) {
+    case model::EventKind::Penalty: return " (pen)";
+    case model::EventKind::OwnGoal: return " (og)";
+    default:                        return "";
+  }
+}
+
+}  // namespace
+
 void LiveMatchScreen::draw(TFT_eSPI& tft, const model::Snapshot& d) {
-  const model::Fixture& f = d.live.fixture;
+  const model::LiveMatch& m = d.live;
+  const model::Fixture&   f = m.fixture;
 
-  char score[8];
+  // --- Scoreline ----------------------------------------------------------
+  char home[model::kNameLen], away[model::kNameLen];
+  shortenClubName(f.homeName, home, sizeof(home));
+  shortenClubName(f.awayName, away, sizeof(away));
+
+  const int16_t scoreY = kContentTop + 16;
+  tft.setTextDatum(MR_DATUM);
+  tft.setTextColor(f.weAreHome ? colour::kOurTeam : colour::kPrimary,
+                   colour::kBackground);
+  tft.drawString(home, board::kScreenWidth / 2 - 34, scoreY, 2);
+
+  tft.setTextDatum(ML_DATUM);
+  tft.setTextColor(f.weAreHome ? colour::kPrimary : colour::kOurTeam,
+                   colour::kBackground);
+  tft.drawString(away, board::kScreenWidth / 2 + 34, scoreY, 2);
+
+  char score[12];
   formatScore(f, score, sizeof(score));
-  drawFixtureHeadline(tft, f, kContentTop + 30, score, colour::kPrimary);
+  tft.setTextDatum(MC_DATUM);
+  tft.setTextColor(colour::kPrimary, colour::kBackground);
+  tft.drawString(score, board::kScreenWidth / 2, scoreY, 4);
 
-  // The clock, large and central — the thing you look up from across a room.
-  char minute[12];
-  snprintf(minute, sizeof(minute), "%u'", d.live.minute);
-  drawStatBlock(tft, board::kScreenWidth / 2, kContentTop + 108, "MINUTE",
-                minute, colour::kAccent);
+  // --- Clock and state ----------------------------------------------------
+  char clock[24];
+  if (f.state == model::MatchState::Paused) {
+    snprintf(clock, sizeof(clock), "HALF TIME");
+  } else if (f.state == model::MatchState::Finished) {
+    snprintf(clock, sizeof(clock), "FULL TIME");
+  } else if (m.extra > 0) {
+    snprintf(clock, sizeof(clock), "%u+%u'", m.minute, m.extra);
+  } else {
+    snprintf(clock, sizeof(clock), "%u'", m.minute);
+  }
+  tft.setTextDatum(MC_DATUM);
+  tft.setTextColor(colour::kAccent, colour::kBackground);
+  tft.drawString(clock, board::kScreenWidth / 2, kContentTop + 40, 2);
 
-  tft.setTextDatum(BC_DATUM);
-  tft.setTextColor(colour::kMuted, colour::kBackground);
-  const char* stateText =
-      f.state == model::MatchState::Paused ? "HALF TIME" : "IN PLAY";
-  tft.drawString(stateText, board::kScreenWidth / 2, kContentBottom - 4, 2);
+  // --- Event columns ------------------------------------------------------
+  // Home left, away right, each in chronological order, so the shape of the
+  // match reads without having to work out which side a line belongs to.
+  constexpr int16_t kDividerX  = board::kScreenWidth / 2;
+  constexpr int16_t kRowHeight = 14;
+  const int16_t colTop = kContentTop + 54;
+
+  tft.drawFastHLine(0, colTop - 6, board::kScreenWidth, colour::kMuted);
+  tft.drawFastVLine(kDividerX, colTop - 4, kContentBottom - colTop + 2,
+                    colour::kMuted);
+
+  if (m.eventCount == 0) {
+    tft.setTextDatum(MC_DATUM);
+    tft.setTextColor(colour::kMuted, colour::kBackground);
+    tft.drawString("no goals or cards yet", board::kScreenWidth / 2,
+                   colTop + 30, 2);
+    return;
+  }
+
+  // Rows are allocated per column, so a busy half for one side does not push
+  // the other side's events down the screen.
+  int16_t nextRow[2] = {colTop, colTop};
+  const int16_t maxY = kContentBottom - kRowHeight;
+
+  for (uint8_t i = 0; i < m.eventCount; ++i) {
+    const model::MatchEvent& e = m.events[i];
+    const uint8_t col = e.home ? 0 : 1;
+    if (nextRow[col] > maxY) continue;  // That column is full.
+
+    const int16_t left = (col == 0) ? 2 : kDividerX + 4;
+    const int16_t cy   = nextRow[col] + kRowHeight / 2;
+
+    char minute[10];
+    if (e.extra > 0) {
+      snprintf(minute, sizeof(minute), "%u+%u", e.minute, e.extra);
+    } else {
+      snprintf(minute, sizeof(minute), "%u'", e.minute);
+    }
+    tft.setTextDatum(MR_DATUM);
+    tft.setTextColor(colour::kMuted, colour::kBackground);
+    tft.drawString(minute, left + 26, cy, 1);
+
+    drawEventMarker(tft, e.kind, left + 34, cy);
+
+    char label[32];
+    snprintf(label, sizeof(label), "%s%s", e.player, eventSuffix(e.kind));
+    tft.setTextDatum(ML_DATUM);
+    tft.setTextColor(colour::kPrimary, colour::kBackground);
+    tft.drawString(label, left + 42, cy, 1);
+
+    nextRow[col] += kRowHeight;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -142,7 +263,8 @@ void SeasonRecordScreen::draw(TFT_eSPI& tft, const model::Snapshot& d) {
                                      : d.lastResult.awayForm;
   }
   if (ourForm != nullptr && ourForm[0] != '\0') {
-    drawFormChips(tft, ourForm, board::kScreenWidth / 2, kContentTop + 168);
+    drawFormChips(tft, ourForm, board::kScreenWidth / 2, kContentTop + 168,
+                  d.liveActive ? d.live.provisionalResult : 0);
   }
 }
 
@@ -195,8 +317,13 @@ void NextFixtureScreen::draw(TFT_eSPI& tft, const model::Snapshot& d) {
     tft.setTextDatum(MC_DATUM);
     tft.setTextColor(colour::kMuted, colour::kBackground);
     tft.drawString("FORM", board::kScreenWidth / 2, formY, 1);
-    drawFormChips(tft, f.homeForm, leftCx, formY);
-    drawFormChips(tft, f.awayForm, rightCx, formY);
+    // A match in progress contributes a provisional chip to *our* form only —
+    // we know how our own game is going, not the next opponent's.
+    const char provisional = d.liveActive ? d.live.provisionalResult : 0;
+    drawFormChips(tft, f.homeForm, leftCx, formY,
+                  f.weAreHome ? provisional : 0);
+    drawFormChips(tft, f.awayForm, rightCx, formY,
+                  f.weAreHome ? 0 : provisional);
   }
 
   char countdown[24];

@@ -92,11 +92,56 @@ struct Fixture {
   char awayForm[kFormLen] = {0};
 };
 
+/**
+ * A notable thing that happened in a match.
+ *
+ * Only goals and cards are kept. Substitutions are available from the API but
+ * deliberately excluded: on a 320x240 panel screen space is the scarce
+ * resource, and a substitution tells a casual viewer far less than a goal or a
+ * card. Recorded oldest-first, as the API returns them.
+ */
+enum class EventKind : uint8_t {
+  Goal,
+  Penalty,     ///< Scored from the spot; worth distinguishing.
+  OwnGoal,     ///< Counts for the *other* side, so the side shown is flipped.
+  YellowCard,
+  RedCard,
+  Other,       ///< Recognised but not specially rendered.
+};
+
+struct MatchEvent {
+  uint8_t   minute = 0;
+  /// Added time, e.g. 90+3 stores minute 90 and extra 3. Zero when none.
+  uint8_t   extra  = 0;
+  EventKind kind   = EventKind::Other;
+  /// Which column this belongs under. For an own goal this is the side that
+  /// *benefits*, not the side that scored it, because that is where a reader
+  /// looks for the goal that changed the score.
+  bool      home   = false;
+  char      player[20] = {0};
+};
+
 /// A live match in progress. Extends a fixture with in-play detail.
 struct LiveMatch {
+  static constexpr uint8_t kMaxEvents = 16;
+
   Fixture fixture;
   /// Minutes elapsed, as reported by the provider.
   uint8_t minute = 0;
+  /// Added time being played, 0 if none.
+  uint8_t extra  = 0;
+
+  MatchEvent events[kMaxEvents];
+  uint8_t    eventCount = 0;
+
+  /**
+   * Our provisional result if the match ended right now: 'W', 'D', 'L'.
+   *
+   * Shown as an extra, visually distinct chip on the form guide. Provisional
+   * on purpose — it must not be mistaken for a settled result, because it can
+   * still change, including deep into stoppage time.
+   */
+  char provisionalResult = 0;
 };
 
 /// One entry in the top-scorer chart. `assists` is absent on the free tier.

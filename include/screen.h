@@ -120,8 +120,12 @@ void drawStatBlock(TFT_eSPI& tft, int16_t cx, int16_t cy, const char* label,
  * recent is outlined so the direction is unambiguous without a caption.
  *
  * @param form 'W'/'D'/'L' characters, oldest first. Empty draws nothing.
+ * @param provisional an in-progress result to append as an extra chip, or 0.
+ *        Drawn with a distinct accent outline rather than the "most recent"
+ *        white one, so a result that can still change never looks settled.
  */
-void drawFormChips(TFT_eSPI& tft, const char* form, int16_t cx, int16_t cy);
+void drawFormChips(TFT_eSPI& tft, const char* form, int16_t cx, int16_t cy,
+                   char provisional = 0);
 
 /// Format a fixture's scoreline as "2-3", or "v" if unplayed.
 void formatScore(const model::Fixture& f, char* out, size_t len);
