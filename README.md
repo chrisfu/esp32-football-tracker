@@ -48,7 +48,7 @@ read back **from the board itself**, not from a datasheet — see
 | Touch | XPT2046 resistive on independent SPI pins — working; **axes transposed vs display** |
 | Extras | microSD slot (own SPI bus), RGB LED, speaker/DAC, LDR light sensor, 3 free GPIO |
 | USB bridge | **WCH CH340** (`0x1A86:0x7523`) |
-| Serial port | `/dev/cu.usbserial-2130` (macOS) |
+| Serial port | `/dev/cu.usbserial-*` (macOS) — **the digits change on replug**, see below |
 | Flash encryption | Disabled |
 | Secure boot | Not enabled |
 | Display speed | 31.2 ms full-screen fill (~2.5 Mpixel/s) at 40 MHz SPI |
@@ -59,6 +59,12 @@ read back **from the board itself**, not from a datasheet — see
 
 **Findings worth knowing before you flash this board:**
 
+* ⚠️ **The macOS device name is not stable.** The digits in
+  `/dev/cu.usbserial-NNNN` encode the USB hub port, so replugging elsewhere
+  renames the device — this board moved from `usbserial-2130` to
+  `usbserial-130` mid-session, which presents as a baffling "port doesn't
+  exist" while the CH340 is still visible in the USB tree. `platformio.ini`
+  matches the port by glob for exactly this reason.
 * ⚠️ **The CH340 on this unit is not reliable above 115200 baud.** Flash reads at
   460800 failed with `Invalid head of packet (0x80): Possible serial noise or
   corruption` and worked first time at 115200. Upload and monitor speeds are
