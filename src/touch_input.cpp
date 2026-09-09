@@ -177,6 +177,15 @@ Gesture TouchInput::poll() {
   int16_t x = 0, y = 0;
   const bool down = getPoint(x, y);
 
+  // A pending tap becomes a single tap once the double-tap window closes
+  // without a second tap. Emitting it here, rather than at release, is what
+  // makes Tap and DoubleTap mutually exclusive — exactly one fires per
+  // interaction, so a caller never has to disambiguate them.
+  if (tapPending_ && !down && millis() - tapPendingAt_ >= kDoubleTapMs) {
+    tapPending_ = false;
+    return Gesture::Tap;
+  }
+
   // --- Press begins -------------------------------------------------------
   if (down && !tracking_) {
     if (millis() - lastRelease_ < kDebounceMs) return Gesture::None;
@@ -219,8 +228,20 @@ Gesture TouchInput::poll() {
     return dy < 0 ? Gesture::SwipeUp : Gesture::SwipeDown;
   }
   if (abs(dx) <= kTapSlop && abs(dy) <= kTapSlop) {
-    return Gesture::Tap;
+    // A second tap inside the window is a double tap; otherwise hold this one
+    // back until the window closes (see the deferred emission in poll()).
+    if (tapPending_ && millis() - tapPendingAt_ < kDoubleTapMs) {
+      tapPending_ = false;
+      return Gesture::DoubleTap;
+    }
+    tapPending_   = true;
+    tapPendingAt_ = millis();
+    return Gesture::None;
   }
+
+  // A swipe cancels any pending tap: the user has moved on, and firing a
+  // stale tap afterwards would act on an intention they no longer have.
+  tapPending_ = false;
 
   // Moved too far for a tap, not far enough for a swipe. Deliberately
   // swallowed: guessing produces screen changes the user did not ask for,

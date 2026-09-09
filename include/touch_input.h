@@ -82,7 +82,8 @@ struct Calibration {
 /// A decoded gesture. The screen manager consumes these rather than raw points.
 enum class Gesture : uint8_t {
   None,
-  Tap,         ///< Press and release without significant movement.
+  Tap,         ///< A single press and release, confirmed not to be a double.
+  DoubleTap,   ///< Two taps in quick succession.
   SwipeLeft,   ///< Next screen.
   SwipeRight,  ///< Previous screen.
   SwipeUp,     ///< Scroll down within a screen (e.g. the league table).
@@ -164,6 +165,10 @@ class TouchInput {
   uint32_t pressStart_  = 0;
   uint32_t lastRelease_ = 0;
 
+  /// A tap awaiting confirmation that it is not the first half of a double.
+  bool     tapPending_   = false;
+  uint32_t tapPendingAt_ = 0;
+
   /// Movement below this is a tap, not a swipe (pixels).
   static constexpr int16_t kTapSlop = 24;
   /// Movement above this along an axis counts as a swipe (pixels).
@@ -172,6 +177,15 @@ class TouchInput {
   static constexpr uint32_t kMaxGestureMs = 1200;
   /// Ignore re-presses within this window to absorb release chatter.
   static constexpr uint32_t kDebounceMs = 45;
+  /**
+   * Window in which a second tap counts as a double tap.
+   *
+   * 400 ms is comfortable to perform deliberately without being so long that
+   * two unrelated taps merge. It is also the delay a *single* tap now incurs,
+   * because a lone tap is only emitted once this window has passed without a
+   * second — the only way to tell the two apart.
+   */
+  static constexpr uint32_t kDoubleTapMs = 400;
 };
 
 }  // namespace touch

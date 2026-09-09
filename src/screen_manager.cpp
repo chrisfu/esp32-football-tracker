@@ -148,10 +148,17 @@ void ScreenManager::handleGesture(touch::Gesture gesture) {
       pinned_ = true;
       advance(-1);
       break;
-    case touch::Gesture::Tap:
+    case touch::Gesture::DoubleTap:
+      // Hold requires a *double* tap. A single tap was too easily triggered by
+      // accident on a resistive panel — brushing the screen would silently
+      // stop the rotation, which looks like the device having frozen.
       pinned_ = !pinned_;
       shownAt_ = millis();
       drawFooter();
+      break;
+    case touch::Gesture::Tap:
+      // Deliberately does nothing yet. Kept distinct from DoubleTap so a
+      // future per-screen action can use it without disturbing hold.
       break;
     default:
       break;

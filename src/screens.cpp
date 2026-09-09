@@ -459,4 +459,60 @@ void TopScorerScreen::draw(TFT_eSPI& tft, const model::Snapshot& d) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Setup and status screens
+// ---------------------------------------------------------------------------
+
+void drawSetupScreen(TFT_eSPI& tft, const char* ssid, const char* password,
+                     const char* url) {
+  tft.fillScreen(colour::kBackground);
+
+  tft.fillRect(0, 0, board::kScreenWidth, 30, colour::kHeaderBg);
+  tft.setTextDatum(MC_DATUM);
+  tft.setTextColor(colour::kAccent, colour::kHeaderBg);
+  tft.drawString("SETUP REQUIRED", board::kScreenWidth / 2, 15, 4);
+
+  tft.setTextColor(colour::kMuted, colour::kBackground);
+  tft.drawString("Join this Wi-Fi network:", board::kScreenWidth / 2, 46, 2);
+
+  // The three values a user needs, each labelled and given room. Font 4 for
+  // the values so they are readable from arm's length while typing them into
+  // a phone.
+  const struct { const char* label; const char* value; uint16_t colour; }
+      fields[] = {
+          {"NETWORK",  ssid,     colour::kOurTeam},
+          {"PASSWORD", password, colour::kOurTeam},
+          {"THEN OPEN", url,     colour::kAccent},
+      };
+
+  int16_t y = 68;
+  for (const auto& f : fields) {
+    tft.setTextDatum(TC_DATUM);
+    tft.setTextColor(colour::kMuted, colour::kBackground);
+    tft.drawString(f.label, board::kScreenWidth / 2, y, 1);
+    tft.setTextColor(f.colour, colour::kBackground);
+    tft.drawString(f.value, board::kScreenWidth / 2, y + 12, 4);
+    y += 48;
+  }
+
+  tft.setTextDatum(BC_DATUM);
+  tft.setTextColor(colour::kMuted, colour::kBackground);
+  tft.drawString("a setup page should open automatically",
+                 board::kScreenWidth / 2, board::kScreenHeight - 4, 1);
+}
+
+void drawStatusScreen(TFT_eSPI& tft, const char* heading, const char* detail,
+                      uint16_t headingColour) {
+  tft.fillScreen(colour::kBackground);
+  tft.setTextDatum(MC_DATUM);
+  tft.setTextColor(headingColour, colour::kBackground);
+  tft.drawString(heading, board::kScreenWidth / 2,
+                 board::kScreenHeight / 2 - 12, 4);
+  if (detail != nullptr && detail[0] != '\0') {
+    tft.setTextColor(colour::kMuted, colour::kBackground);
+    tft.drawString(detail, board::kScreenWidth / 2,
+                   board::kScreenHeight / 2 + 18, 2);
+  }
+}
+
 }  // namespace ui

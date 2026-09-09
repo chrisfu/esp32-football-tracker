@@ -132,7 +132,7 @@ void loadPlaceholder(Snapshot& out) {
     setField(f.homeName, "Bolton Wanderers FC");
     setField(f.awayName, "West Ham United FC");
     setField(f.competition, "Championship");
-    f.kickoffUtc = 1789239600UL;  // 2026-09-08T19:00:00Z
+    f.kickoffUtc = 1788894000UL;  // 2026-09-08T19:00:00Z
     f.homeGoals  = 2;
     f.awayGoals  = 3;
     f.state      = MatchState::Finished;
@@ -151,7 +151,7 @@ void loadPlaceholder(Snapshot& out) {
     setField(f.homeName, "Bolton Wanderers FC");
     setField(f.awayName, "Cardiff City FC");
     setField(f.competition, "Championship");
-    f.kickoffUtc = 1789565400UL;  // 2026-09-12T11:30:00Z
+    f.kickoffUtc = 1789212600UL;  // 2026-09-12T11:30:00Z, from the API
     f.state      = MatchState::Scheduled;
     f.matchday   = 7;
     f.weAreHome  = true;

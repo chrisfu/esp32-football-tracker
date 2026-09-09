@@ -27,11 +27,13 @@
 
 #include "board_config.h"
 #include "model.h"
+#include "network.h"
 #include "screen.h"
 #include "screen_manager.h"
 #include "screens.h"
 #include "store.h"
 #include "touch_calibration.h"
+#include "web_portal.h"
 #include "touch_input.h"
 
 namespace {
@@ -55,6 +57,10 @@ constexpr bool kRunStorageSelfTest = true;
 /// The single mutable copy of the data. The refresh scheduler will own writes;
 /// screens only ever see it as const.
 model::Snapshot g_data;
+
+/// True while the device is running the setup access point, in which case the
+/// carousel is not running at all — setup is a mode, not a screen.
+bool g_setupMode = false;
 
 ui::ScreenManager      g_screens;
 ui::LiveMatchScreen    g_liveMatch;
@@ -259,6 +265,27 @@ void setup() {
     Serial.println(F("Hold BOOT during reset to recalibrate."));
   }
 
+  // Networking. A held BOOT button also forces setup mode, so a device joined
+  // to a network the user no longer has is recoverable without a serial cable.
+  const bool forceSetup = (digitalRead(board::kPinBootButton) == LOW);
+  ui::drawStatusScreen(tft, "Connecting...", g_settings.wifiSsid,
+                       ui::colour::kAccent);
+  net::begin(g_settings, forceSetup);
+
+  g_setupMode = (net::status().mode == net::Mode::AccessPoint);
+  web::begin(g_settings, g_data, g_setupMode);
+
+  if (g_setupMode) {
+    // Show the credentials on the panel and stop here: there is nothing
+    // meaningful to display until the device is configured.
+    ledSet(false, false, true);  // Blue: awaiting configuration.
+    ui::drawSetupScreen(tft, net::apSsid(), net::apPassword(),
+                        net::portalUrl());
+    Serial.println();
+    Serial.println(F("Setup mode. Join the access point shown on screen."));
+    return;
+  }
+
   // Placeholder data stands in for the cache and providers, which do not exist
   // yet. It is real captured data, so layout is tested against genuine club
   // names and figures rather than convenient invented ones.
@@ -277,11 +304,29 @@ void setup() {
 
   ledSet(false, true, false);  // Green: running.
   Serial.println();
-  Serial.println(F("Running. Swipe left/right to change screen, tap to hold"));
-  Serial.println(F("or resume cycling, swipe up/down in the table to scroll."));
+  Serial.println(F("Running. Swipe left/right to change screen,"));
+  Serial.println(F("DOUBLE-TAP to hold or resume cycling, and swipe"));
+  Serial.println(F("up/down in the table to scroll."));
 }
 
 void loop() {
+  // Networking and the web server are pumped in both modes.
+  net::tick();
+  web::tick();
+
+  if (g_setupMode) {
+    // Restart once credentials are in, so the join happens from a clean
+    // radio state rather than by reconfiguring a running AP.
+    if (web::credentialsSubmitted()) {
+      Serial.println(F("Credentials received -- restarting"));
+      ui::drawStatusScreen(tft, "Saved", "restarting...", ui::colour::kWin);
+      delay(1500);  // Let the browser receive the confirmation page first.
+      ESP.restart();
+    }
+    delay(10);
+    return;
+  }
+
   // One gesture poll per iteration feeds both the manager and its screens.
   const touch::Gesture gesture = touchInput.poll();
   if (gesture != touch::Gesture::None) {

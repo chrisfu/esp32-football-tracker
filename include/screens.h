@@ -101,4 +101,20 @@ class TopScorerScreen : public Screen {
   void draw(TFT_eSPI& tft, const model::Snapshot& d) override;
 };
 
+/**
+ * Draw the first-boot setup instructions.
+ *
+ * Not part of the carousel — it is a mode, not a screen. Its whole job is that
+ * the device can be configured by someone holding only the device: no serial
+ * console, no app, no manual. The network name, password and portal address
+ * are all on the panel, because the panel is the one thing the user
+ * definitely has.
+ */
+void drawSetupScreen(TFT_eSPI& tft, const char* ssid, const char* password,
+                     const char* url);
+
+/// Draw a full-screen status message, for connecting and error states.
+void drawStatusScreen(TFT_eSPI& tft, const char* heading, const char* detail,
+                      uint16_t headingColour);
+
 }  // namespace ui
