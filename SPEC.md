@@ -98,7 +98,7 @@ the rotation rather than shown empty.
 | 1 | **Live match** | api-sports `live=all` | Only in rotation while a match is in progress. Score, minute, scorers, cards |
 | 2 | **Season record** | *derived from the table* | W/D/L for the season — costs no extra request |
 | 3 | **Last result** | football-data `teams/{id}/matches` | Opponent, score, competition, date |
-| 4 | **Next fixture** | football-data `teams/{id}/matches` | Opponent, competition, kick-off local time, live countdown |
+| 4 | **Next fixture** | football-data `teams/60/matches` | Opponent, kick-off, countdown, **both clubs' recent form** (§4.8) |
 | 5 | **League table** | football-data `standings` | Scrollable — see below |
 | 6 | **Top scorer** | football-data `scorers` | **Our team's scorers**, with the league leader as context (§4.6) |
 | 7 | ~~Injuries~~ | — | **Deferred** — unavailable on either free tier (§6) |
@@ -154,6 +154,50 @@ So **one request serves both views**: our team's list as the main content, and
 the league leader as a single line of context. The screen labels which list it
 is showing, because two goals reads as a plausible team-leading tally and as
 nonsense for a league-leading one.
+
+### 4.8 Form guide
+
+Requested: our team's form over the last five games, and the opponent's too.
+
+**The API's own `form` field is unusable on the free tier.** It is present in
+the standings schema and `null` for every team — so form is *derived on-device*
+from the finished-matches response instead.
+
+That turns out to be the better route anyway:
+
+* **Our team's form costs no extra request.** It comes from the same
+  `/teams/60/matches?status=FINISHED` call that already supplies the last
+  result. Two screens and the form guide from one request.
+* **The opponent's costs one additional request**, and only when the next
+  fixture changes — roughly once a matchday.
+* Deriving it ourselves means we control the definition: last five *completed*
+  matches, and we can later choose whether cup games count.
+
+Correctness was checked against the league table, which is the useful test:
+Bolton derived to `W D L L L L` across six games, matching their W1 D1 L4 row,
+and Cardiff to `D D D L L D` matching W0 D4 L2.
+
+**Presentation.** Five rounded chips, green/amber/red, reusing the same colour
+language as the result screens so a glance means the same thing everywhere.
+Chips read **left to right in chronological order**, and the most recent is
+outlined — which resolves the ordering ambiguity without spending a line on a
+caption. Shown for both clubs on the Next fixture screen, and for our own team
+on the Season screen.
+
+Form is stored on the fixture as `homeForm`/`awayForm`, five characters plus a
+terminator, rather than per table row — because it is only derivable for clubs
+we specifically fetch, not for all 24.
+
+### 4.9 A finding about `limit` ordering
+
+Worth recording, since it contradicts an earlier caution in this document.
+`/teams/{id}/matches?status=FINISHED&limit=N` selects the **most recent N**
+matches and returns them **oldest first**. That is why `limit=1` earlier
+returned matchday 6 rather than matchday 1.
+
+So the last result is the *final* element of the response, not the first — and
+form is the tail of that same list, which is exactly the order the chips are
+drawn in.
 
 ### 4.7 Team crests
 

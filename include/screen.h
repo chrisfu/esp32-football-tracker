@@ -111,6 +111,18 @@ int16_t drawBoldString(TFT_eSPI& tft, const char* text, int16_t x, int16_t y,
 void drawStatBlock(TFT_eSPI& tft, int16_t cx, int16_t cy, const char* label,
                    const char* value, uint16_t valueColour);
 
+/**
+ * Draw a form guide as a row of coloured chips centred on cx.
+ *
+ * Green for a win, amber for a draw, red for a defeat — the same colour
+ * language the result screens use, so a glance carries the same meaning
+ * everywhere. Chips read left to right in chronological order, and the most
+ * recent is outlined so the direction is unambiguous without a caption.
+ *
+ * @param form 'W'/'D'/'L' characters, oldest first. Empty draws nothing.
+ */
+void drawFormChips(TFT_eSPI& tft, const char* form, int16_t cx, int16_t cy);
+
 /// Format a fixture's scoreline as "2-3", or "v" if unplayed.
 void formatScore(const model::Fixture& f, char* out, size_t len);
 

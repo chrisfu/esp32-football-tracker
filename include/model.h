@@ -55,6 +55,10 @@ enum class MatchState : uint8_t {
   Postponed,
 };
 
+/// Recent form: five results, **oldest first**, so it reads left to right in
+/// chronological order. Five characters plus a terminator.
+constexpr uint8_t kFormLen = 6;
+
 /// A fixture, past, present or future.
 struct Fixture {
   char       homeTla[kTlaLen]   = {0};
@@ -71,6 +75,21 @@ struct Fixture {
   uint8_t    matchday   = 0;
   bool       weAreHome  = false;
   bool       valid      = false;
+
+  /**
+   * Each club's recent form, as 'W'/'D'/'L' characters, oldest first.
+   *
+   * Derived on-device rather than read from the API: football-data.org's
+   * standings response carries a `form` field, but it is **null for every team
+   * on the free tier**. It is computed instead from the finished-matches
+   * response — which for our own team costs nothing, being the same request
+   * that supplies the last result. The opponent's costs one additional
+   * request, and only when the fixture changes.
+   *
+   * Empty when unknown, which the renderer shows as blank rather than guessing.
+   */
+  char homeForm[kFormLen] = {0};
+  char awayForm[kFormLen] = {0};
 };
 
 /// A live match in progress. Extends a fixture with in-play detail.

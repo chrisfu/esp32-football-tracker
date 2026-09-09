@@ -4,6 +4,7 @@
  */
 
 #include <stdio.h>
+#include <string.h>
 #include <time.h>
 
 #include "screen.h"
@@ -35,6 +36,42 @@ void drawStatBlock(TFT_eSPI& tft, int16_t cx, int16_t cy, const char* label,
   tft.drawString(label, cx, cy - kValueHalf - kGap - kLabelHalf + 12, 2);
   tft.setTextColor(valueColour, colour::kBackground);
   tft.drawString(value, cx, cy + 12, 7);
+}
+
+void drawFormChips(TFT_eSPI& tft, const char* form, int16_t cx, int16_t cy) {
+  if (form == nullptr || form[0] == '\0') return;
+
+  const uint8_t n = static_cast<uint8_t>(strlen(form));
+  constexpr int16_t kChip = 15;  // Square, and just wide enough for Font 1.
+  constexpr int16_t kGap  = 3;
+
+  const int16_t total = n * kChip + (n - 1) * kGap;
+  int16_t x = cx - total / 2;
+
+  for (uint8_t i = 0; i < n; ++i) {
+    uint16_t fill;
+    switch (form[i]) {
+      case 'W': fill = colour::kWin;  break;
+      case 'D': fill = colour::kDraw; break;
+      case 'L': fill = colour::kLoss; break;
+      default:  fill = colour::kMuted; break;
+    }
+    tft.fillRoundRect(x, cy - kChip / 2, kChip, kChip, 3, fill);
+
+    // The most recent result is the last character; outlining it shows which
+    // end is "now" without needing a caption.
+    if (i == n - 1) {
+      tft.drawRoundRect(x - 1, cy - kChip / 2 - 1, kChip + 2, kChip + 2, 4,
+                        colour::kPrimary);
+    }
+
+    // Black on the bright fills gives better contrast than white would.
+    const char letter[2] = {form[i], '\0'};
+    tft.setTextDatum(MC_DATUM);
+    tft.setTextColor(TFT_BLACK, fill);
+    tft.drawString(letter, x + kChip / 2, cy, 1);
+    x += kChip + kGap;
+  }
 }
 
 void formatScore(const model::Fixture& f, char* out, size_t len) {
