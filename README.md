@@ -45,7 +45,7 @@ read back **from the board itself**, not from a datasheet — see
 | PSRAM | **None** — `PKG_VERSION = 1` (D0WD has no in-package PSRAM) |
 | MAC | `20:50:0D:34:04:50` |
 | Display | 320×240 SPI, ILI9341-compatible — **inverted variant**, needs `TFT_INVERSION_ON` |
-| Touch | XPT2046 resistive, on independent SPI pins |
+| Touch | XPT2046 resistive on independent SPI pins — **working**, calibrated |
 | Extras | microSD slot (own SPI bus), RGB LED, speaker/DAC, LDR light sensor, 3 free GPIO |
 | USB bridge | **WCH CH340** (`0x1A86:0x7523`) |
 | Serial port | `/dev/cu.usbserial-2130` (macOS) |
