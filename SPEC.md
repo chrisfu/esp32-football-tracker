@@ -33,10 +33,13 @@ Full verified detail in [docs/HARDWARE.md](docs/HARDWARE.md). The numbers that
 drive design:
 
 * **ESP32-D0WD-V3**, dual core 240 MHz, Wi-Fi + BT.
-* **4 MB flash. No PSRAM.** ~320 KB internal DRAM total; realistically
-  **160–200 KB free** once Wi-Fi + TLS are running.
+* **4 MB flash. No PSRAM.** Measured at boot: 349,900 bytes free heap, but the
+  **largest contiguous block is only 114,676 bytes** — and that is what caps any
+  single allocation, before Wi-Fi and TLS take their share.
 * **320×240 SPI display.** A full 16-bit framebuffer would be
-  320×240×2 = **150 KB — more RAM than we can spare.** Never allocate one.
+  320×240×2 = **150 KB — larger than the biggest block the heap can offer.**
+  Never allocate one. Measured full-screen fill is 31.2 ms at 40 MHz SPI, so
+  rendering is not the bottleneck and DMA is unnecessary for our workload.
 * **CH340 serial bridge, unreliable above 115200 baud.** Pinned in
   `platformio.ini`.
 * Touch IRQ on an RTC-capable pin ⇒ wake-on-touch from deep sleep is possible.
@@ -556,7 +559,8 @@ reformatted as LittleFS in the same offset the stock table used for SPIFFS.
 Each item is one branch, per R1.
 
 * [x] Hardware discovery — chip, flash, pinout, partition table, API limits
-* [ ] PlatformIO scaffold + display bring-up (**confirms ILI9341 vs ST7789**)
+* [x] PlatformIO scaffold + display bring-up — panel identified as an inverted
+      ILI9341 variant; 31 ms full redraw measured
 * [ ] Touch driver + calibration
 * [ ] Screen manager and auto-cycling with placeholder data
 * [ ] LittleFS, config and cache layer with atomic writes
@@ -585,8 +589,14 @@ Not committed, recorded so they are not lost:
 
 ## 13. Open questions
 
-* **Panel controller** — ILI9341 assumed; confirmed on first display bring-up.
-  See the warning in [docs/HARDWARE.md](docs/HARDWARE.md).
+* ~~Panel controller~~ — **resolved at bring-up: ILI9341-compatible but an
+  inverted variant**, needing `-D TFT_INVERSION_ON=1`. Geometry and pin map were
+  correct as specified. Panel ID read-back is unavailable on this unit (MISO is
+  on strapping pin GPIO12), so it was identified visually.
+* **🚩 Light sensor reads zero.** GPIO34 sits at ground with no variance, so the
+  LDR is probably not populated on this board. **Auto-brightness (§9 item 1) may
+  have to be dropped**; inactivity dimming is unaffected and remains the real
+  power win. Needs a torch test to confirm.
 * ~~Team choice~~ — **decided: Bolton Wanderers**, api-sports team `id=68`
   (founded 1874, Toughsheet Community Stadium). Note the API returns the name as
   plain `"Bolton"`, so the UI needs a display-name override to show

@@ -174,18 +174,79 @@ esptool --port /dev/cu.usbserial-2130 --baud 115200 read-flash 65536 1310720 app
 strings -n 8 app0.bin | grep -iE "TFT_eSPI|LVGL"
 ```
 
-### ⚠️ Panel controller is not yet hardware-confirmed
+### ✅ Panel: ILI9341-compatible, but **inverted** — confirmed at bring-up
 
-The binary does **not** identify the panel controller — TFT_eSPI selects its
-driver with a compile-time `#define`, so no driver name survives into the image.
-The ILI9341 attribution above comes from the board reference for the
-ESP32-2432S028R, not from this unit.
+The binary does not identify the panel controller — TFT_eSPI selects its driver
+with a compile-time `#define`, so no driver name survives into the image. It was
+resolved empirically instead.
 
-A small number of `2432S028` batches ship an **ST7789** instead, which presents as
-inverted colours and/or a wrong-way-round display rather than a blank screen.
-This is resolved on our first display bring-up commit by rendering a known
-test pattern; if colours or orientation are wrong, switching the TFT_eSPI driver
-define is the one-line fix. Tracked as an open item in the spec.
+**Electrical read-back does not work on this unit.** Both ID registers return
+all zeroes:
+
+```
+0xD3 (RDDID4)  : 00 00 00
+0x04 (RDDID)   : 00 00 00
+```
+
+This was anticipated: panel read-back arrives over MISO on **GPIO12, a live
+strapping pin**. Treat all-zeroes as "could not tell", never as "wrong panel".
+
+So identification was done visually, with a labelled colour-bar pattern that
+needs no read-back. First flash rendered **every colour as its exact
+complement**:
+
+| Expected | Rendered |
+|---|---|
+| black background | white |
+| white text | black |
+| red | cyan |
+| green | magenta |
+| blue | yellow |
+| white | black |
+
+**This is a panel inversion mismatch, not a channel-order problem.** The
+distinction matters and is easy to get wrong: a BGR panel swaps red and blue
+*only* and leaves white, black and green untouched. Here white and black also
+swapped and green went magenta, so every channel was complemented.
+
+**Fix:** `-D TFT_INVERSION_ON=1` alongside `ILI9341_2_DRIVER`. Verified correct
+on hardware afterwards — bars matching their labels, and a greyscale ramp
+running dark-to-light in the right direction.
+
+Geometry needed no correction: the 1px border was unbroken on all four edges and
+text was positioned correctly, so the pin map, SPI settings and 240×320 offsets
+were right from the start. Only the inversion state was wrong.
+
+### Measured performance
+
+| Metric | Value |
+|---|---|
+| Full-screen fill (320×240) | **31.2 ms** (~2.5 Mpixel/s) at 40 MHz SPI |
+| Free heap at boot | 349,900 bytes |
+| **Largest contiguous block** | **114,676 bytes** |
+| Sketch size | 311 KB of the 1280 KB app partition |
+
+The largest *contiguous* block is the figure that matters, since it caps any
+single allocation — and at ~112 KB it independently confirms that the 150 KB
+framebuffer was never an option, before Wi-Fi and TLS have even claimed their
+share.
+
+A 31 ms full redraw means rendering is not the bottleneck and DMA is not needed
+for our workload, though the factory firmware proves it available if we ever
+want it.
+
+### ⚠️ Light sensor (GPIO34) reads zero — unresolved
+
+`analogRead` returns **exactly 0 with no variance** across averaged samples.
+`analogReadMilliVolts` reports 142 mV, which is the ESP32 ADC's known
+calibration floor rather than a real signal, so the pin is sitting at ground.
+
+Most likely the **LDR is not populated on this unit** — some CYD batches ship
+the footprint empty. Not yet confirmed with a torch test.
+
+Consequence: **LDR auto-brightness may not be available on this board.** It is a
+nice-to-have — backlight dimming on inactivity, which is the actual power win,
+works regardless and does not depend on the sensor.
 
 This firmware is overwritten by our first flash; the dual-slot table means the
 demo is not recoverable, which is fine — it is freely available upstream.

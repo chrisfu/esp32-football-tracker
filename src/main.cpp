@@ -33,6 +33,9 @@ namespace {
 
 TFT_eSPI tft;
 
+/// Remembered from setup() so the serial toggle handler can redraw correctly.
+bool g_panelConfirmed = false;
+
 // ---------------------------------------------------------------------------
 // Chip report
 // ---------------------------------------------------------------------------
@@ -252,6 +255,10 @@ uint32_t readAmbientMillivolts() {
  * the board can tell instantly whether the bar under the word "RED" is
  * actually red. If red and blue are swapped, add -D TFT_RGB_ORDER=TFT_BGR.
  */
+/// Current display inversion state, so it can be shown on screen and toggled
+/// live over serial without a reflash cycle.
+bool g_inverted = true;  // matches the TFT_INVERSION_ON build flag
+
 void drawTestPattern(bool panelConfirmed) {
   tft.fillScreen(TFT_BLACK);
 
@@ -293,9 +300,40 @@ void drawTestPattern(bool panelConfirmed) {
     tft.setTextColor(TFT_YELLOW, TFT_BLACK);
     tft.drawString("panel ID unread - check bars", board::kScreenWidth / 2, 148, 2);
   }
+  // State is drawn on screen so a photograph of the display is enough to tell
+  // which setting was active — no need to correlate against serial output.
   tft.setTextColor(TFT_CYAN, TFT_BLACK);
-  tft.drawString("If RED and BLU are swapped,", board::kScreenWidth / 2, 168, 2);
-  tft.drawString("set TFT_RGB_ORDER=TFT_BGR", board::kScreenWidth / 2, 186, 2);
+  tft.drawString(g_inverted ? "inversion: ON" : "inversion: OFF",
+                 board::kScreenWidth / 2, 168, 2);
+  tft.setTextColor(TFT_DARKGREY, TFT_BLACK);
+  tft.drawString("send 'i' over serial to toggle",
+                 board::kScreenWidth / 2, 190, 2);
+
+  // A greyscale ramp. Inversion errors are obvious here even to someone not
+  // comparing bar labels: the ramp must run dark-to-light left to right.
+  constexpr int16_t kRampTop = 212;
+  for (int16_t x = 0; x < board::kScreenWidth - 20; ++x) {
+    const uint8_t level = (x * 255) / (board::kScreenWidth - 21);
+    tft.drawFastVLine(10 + x, kRampTop, 18, tft.color565(level, level, level));
+  }
+  tft.setTextDatum(TL_DATUM);
+  tft.setTextColor(TFT_WHITE, TFT_BLACK);
+  tft.drawString("dark", 12, kRampTop - 14, 2);
+  tft.setTextDatum(TR_DATUM);
+  tft.drawString("light", board::kScreenWidth - 12, kRampTop - 14, 2);
+  tft.setTextDatum(TC_DATUM);
+}
+
+/// Flip inversion and redraw. Exists so the correct setting can be found
+/// interactively instead of through repeated build-and-flash cycles.
+void toggleInversion(bool panelConfirmed) {
+  g_inverted = !g_inverted;
+  tft.invertDisplay(g_inverted);
+  drawTestPattern(panelConfirmed);
+  Serial.printf("inversion now %s -- if colours are correct, keep %s\n",
+                g_inverted ? "ON" : "OFF",
+                g_inverted ? "-D TFT_INVERSION_ON=1"
+                           : "-D TFT_INVERSION_OFF=1");
 }
 
 /**
@@ -362,6 +400,7 @@ void setup() {
 
   benchmarkFill();
   drawTestPattern(panelConfirmed);
+  g_panelConfirmed = panelConfirmed;
 
   // 11 dB attenuation gives the full ~0-3.3 V input range. Set explicitly
   // rather than relying on the default, so the reading means the same thing
@@ -400,6 +439,13 @@ void loop() {
 
   // Report ambient light once a second so auto-brightness behaviour can be
   // eyeballed against real room lighting.
+  // Live inversion toggle. Cheap to add and it removes a whole
+  // build-flash-look round trip from getting the panel config right.
+  while (Serial.available() > 0) {
+    const int c = Serial.read();
+    if (c == 'i' || c == 'I') toggleInversion(g_panelConfirmed);
+  }
+
   static uint32_t lastReport = 0;
   static uint16_t ambientMin = 0xFFFF;
   static uint16_t ambientMax = 0;
