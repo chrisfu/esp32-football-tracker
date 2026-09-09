@@ -140,6 +140,13 @@ void handleSetup() {
       "<label for=\"pass\">Password</label>"
       "<input id=\"pass\" name=\"pass\" type=\"password\" "
       "autocomplete=\"off\">"
+      // Reveal option, because a mistyped Wi-Fi password is only discovered
+      // after a reboot and a failed join — an expensive way to find a typo.
+      // Now commonplace, and the risk is low on a page only reachable from a
+      // network the user is already on.
+      "<label class=\"pure-checkbox\" style=\"margin-top:.5rem\">"
+      "<input type=\"checkbox\" onclick=\"var p=document.getElementById("
+      "'pass');p.type=this.checked?'text':'password'\"> Show password</label>"
       "</div><div class=\"card\"><h2>Your team</h2>"
       "<p style=\"font-size:.85rem;color:#aaa\">Defaults to Bolton Wanderers "
       "in the Championship. Changeable later from the main interface.</p>"

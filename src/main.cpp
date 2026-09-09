@@ -31,6 +31,7 @@
 #include "screen.h"
 #include "screen_manager.h"
 #include "screens.h"
+#include "settings_menu.h"
 #include "store.h"
 #include "touch_calibration.h"
 #include "web_portal.h"
@@ -62,6 +63,7 @@ model::Snapshot g_data;
 /// carousel is not running at all — setup is a mode, not a screen.
 bool g_setupMode = false;
 
+ui::SettingsMenu       g_menu;
 ui::ScreenManager      g_screens;
 ui::LiveMatchScreen    g_liveMatch;
 ui::SeasonRecordScreen g_seasonRecord;
@@ -300,6 +302,7 @@ void setup() {
   g_screens.add(&g_nextFixture);
   g_screens.add(&g_leagueTable);
   g_screens.add(&g_topScorer);
+  g_menu.begin(g_settings);
   g_screens.begin(tft, g_data, g_settings.screenDwellMs);
 
   ledSet(false, true, false);  // Green: running.
@@ -327,12 +330,64 @@ void loop() {
     return;
   }
 
-  // One gesture poll per iteration feeds both the manager and its screens.
+  // One gesture poll per iteration feeds the menu, the manager and its
+  // screens — in that order of priority.
   const touch::Gesture gesture = touchInput.poll();
   if (gesture != touch::Gesture::None) {
     Serial.printf("gesture: %s%s\n", touch::gestureName(gesture),
                   g_screens.isPinned() ? "  [held]" : "");
   }
+
+  // --- Settings menu ------------------------------------------------------
+  if (g_menu.isOpen()) {
+    const bool stillOpen = g_menu.handleGesture(
+        tft, gesture, touchInput.gestureX(), touchInput.gestureY());
+
+    // Destructive actions are applied here rather than inside the menu, so
+    // the menu stays a pure UI component with no power to reboot the device
+    // on its own.
+    switch (g_menu.takeAction()) {
+      case ui::SettingsMenu::Action::ResetWifi: {
+        Serial.println(F("[menu] clearing Wi-Fi credentials"));
+        g_settings.wifiSsid[0] = '\0';
+        g_settings.wifiPass[0] = '\0';
+        store::saveSettings(g_settings);
+        ui::drawStatusScreen(tft, "Wi-Fi reset", "restarting into setup...",
+                             ui::colour::kDraw);
+        delay(1500);
+        ESP.restart();
+        break;
+      }
+      case ui::SettingsMenu::Action::FactoryReset:
+        Serial.println(F("[menu] factory reset"));
+        store::factoryReset();
+        ui::drawStatusScreen(tft, "Factory reset", "restarting...",
+                             ui::colour::kLoss);
+        delay(1500);
+        ESP.restart();
+        break;
+      case ui::SettingsMenu::Action::None:
+        break;
+    }
+
+    if (!stillOpen) {
+      // Returning to the carousel redraws it in full: the menu overwrote the
+      // whole panel, chrome included.
+      Serial.println(F("[menu] closed"));
+      g_screens.refresh();
+    }
+    delay(8);
+    return;
+  }
+
+  // A long press opens the menu instead of reaching the carousel.
+  if (gesture == touch::Gesture::LongPress) {
+    Serial.println(F("[menu] opened by long press"));
+    g_menu.open(tft);
+    delay(8);
+    return;
+  }
+
   g_screens.handleGesture(gesture);
   g_screens.tick();
 

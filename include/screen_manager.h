@@ -18,11 +18,16 @@ namespace ui {
  *
  * Interaction model:
  *   - Auto-cycles every `dwellMs`, skipping screens with no data.
- *   - Swipe left/right moves between screens and pins the rotation, because
- *     someone who navigated deliberately does not want it moving on under them.
- *   - Tap toggles the pin, so cycling can be resumed without waiting.
+ *   - Swipe left/right moves between screens and resets the dwell, but does
+ *     NOT pin. Auto-pinning on a swipe meant browsing silently stopped the
+ *     rotation, which then had to be undone deliberately.
+ *   - **Double** tap toggles the hold. A single tap was too easily triggered
+ *     by brushing a resistive panel, and the failure mode was bad: rotation
+ *     stops and the device looks frozen.
  *   - Vertical swipes are offered to the screen first, so the league table can
  *     scroll without leaving the screen.
+ *   - A long press is intercepted before the manager sees it, to open the
+ *     settings menu.
  */
 class ScreenManager {
  public:
@@ -42,6 +47,15 @@ class ScreenManager {
 
   /// True while the rotation is paused by the user.
   bool isPinned() const { return pinned_; }
+
+  /**
+   * Redraw everything, chrome included.
+   *
+   * Needed after anything that has taken over the whole panel — the settings
+   * menu, a status screen — since the manager otherwise only repaints the
+   * content area and would leave a stale title bar and footer behind.
+   */
+  void refresh();
 
  private:
   void showIndex(uint8_t index, bool force = false);

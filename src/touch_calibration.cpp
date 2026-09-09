@@ -23,6 +23,7 @@ const char* gestureNameImpl(touch::Gesture g) {
   switch (g) {
     case touch::Gesture::Tap:        return "TAP";
     case touch::Gesture::DoubleTap:  return "DOUBLE TAP";
+    case touch::Gesture::LongPress:  return "LONG PRESS";
     case touch::Gesture::SwipeLeft:  return "SWIPE LEFT";
     case touch::Gesture::SwipeRight: return "SWIPE RIGHT";
     case touch::Gesture::SwipeUp:    return "SWIPE UP";
