@@ -244,6 +244,11 @@ void ScreenManager::tick() {
     drawFooter();
   }
 
+  // Small animations run at loop rate rather than on the redraw timer: a
+  // scrolling name has to move smoothly, and it only touches its own strip.
+  // Suppressed while dimmed, like the refreshes below.
+  if (!lowPower_) screens_[current_]->animate(*tft_, *data_);
+
   // Live content (a match clock, a countdown) refreshes on its own schedule,
   // rate-limited so it cannot monopolise the SPI bus — and skipped entirely
   // while dimmed, since the point of the refresh is that someone is reading

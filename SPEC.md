@@ -138,6 +138,57 @@ from the dwell, gets the same coverage for a fraction of the work.
 
 ---
 
+### 4.4b Fixture screen layout, and long club names
+
+Each club has a **column centre**, and everything belonging to it — crest,
+name, form chips — is centred on that. An earlier layout put the crests at
+fixed insets while edge-aligning the names against the scoreline, so a name's
+centre moved with its length and never sat under its crest.
+
+The constants come from measurement rather than tidiness. Font 2 widths on
+this display:
+
+| Club | Width | | |
+|---|---|---|---|
+| Watford | 49 px | score `2-3` in Font 4 | 36 px |
+| Cardiff City | 74 px | `v` in Font 4 | 12 px |
+| West Ham United | 101 px | | |
+| **Bolton Wanderers** | **109 px** | | |
+| Preston North End | 115 px | | |
+| Queens Park Rangers | 129 px | | |
+| Wolverhampton Wanderers | 161 px | | |
+
+The first attempt used quarter-point columns and a 26 px centre guard, giving
+108 px of name — **one pixel short of "Bolton Wanderers"**, which was therefore
+truncated for nothing. The guard was also reserving 52 px for a 36 px score.
+Both are now derived: a 22 px guard, and columns at 70 / 250 where the inward
+and outward limits meet, which is what maximises symmetric width. That yields
+**136 px**, so every name above fits except Wolverhampton's.
+
+**Names too wide to fit scroll instead of being abbreviated.** Only those that
+genuinely overflow move; the rest are static, which is nearly all of them.
+Implementation notes:
+
+* Clipped through a **sprite** the width of the column, since TFT_eSPI has no
+  arbitrary clip region — which also means the animation touches no pixels
+  outside its own strip. The sprite is created once and kept: at ~4.9 KB,
+  allocating and freeing it many times a second would churn a heap whose
+  largest block is 110 KB.
+* The offset is **derived from `millis()`**, so no scroll state is stored: hold
+  at the start, pan at 22 px/s, hold at the end, repeat.
+* Animated through a new `Screen::animate()` hook called at loop rate, rather
+  than the once-a-second redraw timer — a full redraw at animation rate would
+  be visible flicker and wasted bandwidth.
+* **Scrolling stops when the backlight dims**, for the same reason the
+  per-second refreshes do: nobody is reading it.
+* Where a name still cannot be shown (no sprite), it falls back to truncation
+  marked with two dots. One dot was mistaken for a clipped glyph — at this
+  size the foot of an "s" and a full stop look much alike.
+
+`MARQUEE_SQUEEZE` narrows the columns at build time so the scrolling path can
+be exercised whatever clubs happen to be on screen; without it, a fixture of
+two short names would leave the animation untested.
+
 ### 4.5b Live match takes priority (requested)
 
 When a match involving our team is in progress, the live screen stops being one

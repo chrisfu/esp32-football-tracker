@@ -37,6 +37,13 @@ class LastResultScreen : public Screen {
     return d.lastResult.valid;
   }
   void draw(TFT_eSPI& tft, const model::Snapshot& d) override;
+  /// Scrolls any club name too long for its column.
+  bool animate(TFT_eSPI& tft, const model::Snapshot& d) override;
+
+ private:
+  /// Where draw() put the name row, so animate() can find it again without
+  /// recomputing the whole layout.
+  int16_t namesY_ = 0;
 };
 
 /// The next scheduled fixture, with a live countdown.
@@ -49,6 +56,11 @@ class NextFixtureScreen : public Screen {
   void draw(TFT_eSPI& tft, const model::Snapshot& d) override;
   /// The countdown ticks.
   bool needsRedraw() const override { return true; }
+  /// Scrolls any club name too long for its column.
+  bool animate(TFT_eSPI& tft, const model::Snapshot& d) override;
+
+ private:
+  int16_t namesY_ = 0;
 };
 
 /// The full league table, scrollable.

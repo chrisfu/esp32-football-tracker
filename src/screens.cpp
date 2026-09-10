@@ -53,11 +53,29 @@ uint16_t resultColour(const model::Fixture& f) {
 // moved with its length and could never line up with the crest above it —
 // "Watford" and "Wolverhampton Wanderers" landed in visibly different places.
 
-constexpr int16_t kHomeColumnX = board::kScreenWidth / 4;      // 80
-constexpr int16_t kAwayColumnX = board::kScreenWidth * 3 / 4;  // 240
-/// Space kept clear either side of the centre for the score, so a long name
-/// cannot run into it.
-constexpr int16_t kCentreGuard = 26;
+// Column centres and the centre guard are derived from measurement, not
+// chosen for tidiness. Font 2 widths on this display, and Font 4 for the
+// score:
+//
+//   Bolton Wanderers         109 px      score "2-3"   36 px
+//   Queens Park Rangers      129 px      "v"           12 px
+//   Preston North End        115 px
+//   West Ham United          101 px
+//   Wolverhampton Wanderers  161 px
+//
+// The first version used quarter-point columns (80 / 240) and a 26 px guard,
+// which allowed 108 px of name — one pixel short of "Bolton Wanderers", so it
+// was truncated to "Bolton Wanderer." for the sake of a single pixel. The
+// guard was also reserving 52 px for a 36 px score.
+//
+// Both are now sized from the measurements: a 22 px guard leaves 44 px clear
+// for the score, and the columns sit where the inward and outward limits meet,
+// which is what maximises symmetric width.
+constexpr int16_t kCentreGuard = 22;
+/// (kScreenWidth/2 - kCentreGuard + 2) / 2 — the point where the inward limit
+/// and the outward limit are equal, giving the widest centred column.
+constexpr int16_t kHomeColumnX = 70;
+constexpr int16_t kAwayColumnX = board::kScreenWidth - kHomeColumnX;  // 250
 
 /**
  * Width a club's text may occupy without reaching the scoreline.
@@ -95,16 +113,23 @@ void fitClubName(TFT_eSPI& tft, const char* in, char* out, size_t outLen,
   shortenClubName(in, out, outLen);
   if (tft.textWidth(out, font) <= maxPixels) return;
 
-  // Trim from the end, leaving a full stop so the truncation is evident
-  // rather than looking like the club's actual name.
+  // Trim from the end, marking the cut with two dots rather than one.
+  //
+  // A single full stop was mistaken for a clipped glyph — at this size the
+  // bottom of an "s" and a period look much alike, so "Bolton Wanderer."
+  // read as a rendering fault rather than as deliberate shortening. Two dots
+  // are unambiguous.
   size_t len = strlen(out);
   while (len > 1) {
     out[--len] = '\0';
+    // Trailing spaces would leave the marker floating away from the text.
+    while (len > 1 && out[len - 1] == ' ') out[--len] = '\0';
+
     char probe[model::kNameLen];
-    // Built in a separate buffer and copied back: snprintf(out, ..., "%s.",
+    // Built in a separate buffer and copied back: snprintf(out, ..., "%s..",
     // out) reads and writes the same storage, which is undefined behaviour
     // even though it usually appears to work.
-    snprintf(probe, sizeof(probe), "%s.", out);
+    snprintf(probe, sizeof(probe), "%s..", out);
     if (tft.textWidth(probe, font) <= maxPixels) {
       strncpy(out, probe, outLen - 1);
       out[outLen - 1] = '\0';
@@ -129,21 +154,143 @@ bool drawFixtureCrests(TFT_eSPI& tft, const model::Fixture& f, int16_t y) {
   return any;
 }
 
-/// Draw both club names, centred on the same columns as their crests.
-void drawFixtureNames(TFT_eSPI& tft, const model::Fixture& f, int16_t y) {
-  char home[model::kNameLen], away[model::kNameLen];
-  fitClubName(tft, f.homeName, home, sizeof(home),
-              columnTextWidth(kHomeColumnX), 2);
-  fitClubName(tft, f.awayName, away, sizeof(away),
-              columnTextWidth(kAwayColumnX), 2);
+// ---------------------------------------------------------------------------
+// Scrolling names
+// ---------------------------------------------------------------------------
+//
+// A few club names are simply wider than any column this screen can offer —
+// "Wolverhampton Wanderers" measures 161 px against 136 px available — so
+// rather than abbreviate them into something ambiguous, they scroll.
+//
+// Only names that genuinely overflow move; everything else is drawn static,
+// which is most of them. Scrolling stops when the backlight dims, because the
+// manager stops calling animate() there.
 
-  tft.setTextDatum(MC_DATUM);
-  tft.setTextColor(f.weAreHome ? colour::kOurTeam : colour::kPrimary,
-                   colour::kBackground);
-  tft.drawString(home, kHomeColumnX, y, 2);
-  tft.setTextColor(f.weAreHome ? colour::kPrimary : colour::kOurTeam,
-                   colour::kBackground);
-  tft.drawString(away, kAwayColumnX, y, 2);
+constexpr int16_t kNameHeight = 18;  ///< Font 2 is 16 px; 18 gives margin.
+
+/// Phase timings. Long enough at each end to read the name without waiting.
+constexpr uint32_t kMarqueeHoldStartMs = 1800;
+constexpr uint32_t kMarqueeHoldEndMs   = 1400;
+constexpr uint32_t kMarqueePxPerSecond = 22;
+
+/**
+ * Sprite used to clip scrolling text, created once and kept.
+ *
+ * TFT_eSPI has no arbitrary clip region, so the text is drawn into a sprite
+ * the width of the column and pushed as a block — which is also why the
+ * animation touches no pixels outside its own strip.
+ *
+ * Kept rather than created per frame: at 136x18x2 it is about 4.9 KB, and
+ * allocating and freeing that many times a second would churn a heap whose
+ * largest block is 110 KB.
+ */
+TFT_eSprite& nameSprite(TFT_eSPI& tft) {
+  static TFT_eSprite sprite(&tft);
+  static bool created = false;
+  if (!created) {
+    sprite.setColorDepth(16);
+    created = sprite.createSprite(columnTextWidth(kHomeColumnX), kNameHeight);
+    if (!created) Serial.println(F("[ui] name sprite allocation failed"));
+  }
+  return sprite;
+}
+
+/// Horizontal offset for a marquee, derived from the clock so no state is kept.
+int16_t marqueeOffset(int16_t overflowPx) {
+  if (overflowPx <= 0) return 0;
+  const uint32_t travelMs =
+      (static_cast<uint32_t>(overflowPx) * 1000) / kMarqueePxPerSecond;
+  const uint32_t period =
+      kMarqueeHoldStartMs + travelMs + kMarqueeHoldEndMs;
+  const uint32_t t = millis() % period;
+
+  if (t < kMarqueeHoldStartMs) return 0;
+  if (t < kMarqueeHoldStartMs + travelMs) {
+    const uint32_t elapsed = t - kMarqueeHoldStartMs;
+    return static_cast<int16_t>((static_cast<uint32_t>(overflowPx) * elapsed) /
+                                travelMs);
+  }
+  return overflowPx;  // Held at the end before looping back.
+}
+
+/**
+ * Draw one club name in its column, scrolling if it does not fit.
+ *
+ * @return true if the name is scrolling, so the caller knows the strip needs
+ *         animating rather than being left alone.
+ */
+bool drawColumnName(TFT_eSPI& tft, const char* rawName, int16_t columnX,
+                    int16_t y, uint16_t fg) {
+  char name[model::kNameLen];
+  shortenClubName(rawName, name, sizeof(name));
+
+  // MARQUEE_SQUEEZE narrows the column at build time so the scrolling path can
+  // be exercised with the club names actually on screen. Without it the
+  // current fixture may well be two short names, and the animation would ship
+  // untested.
+#ifdef MARQUEE_SQUEEZE
+  const int16_t maxWidth = columnTextWidth(columnX) - MARQUEE_SQUEEZE;
+#else
+  const int16_t maxWidth = columnTextWidth(columnX);
+#endif
+  const int16_t textPx   = tft.textWidth(name, 2);
+
+  if (textPx <= maxWidth) {
+    // Fits: drawn directly, no sprite and no animation.
+    tft.setTextDatum(MC_DATUM);
+    tft.setTextColor(fg, colour::kBackground);
+    tft.drawString(name, columnX, y, 2);
+    return false;
+  }
+
+  TFT_eSprite& sprite = nameSprite(tft);
+  if (sprite.width() < maxWidth) {
+    // Sprite unavailable: fall back to the static truncated form rather than
+    // showing nothing.
+    fitClubName(tft, rawName, name, sizeof(name), maxWidth, 2);
+    tft.setTextDatum(MC_DATUM);
+    tft.setTextColor(fg, colour::kBackground);
+    tft.drawString(name, columnX, y, 2);
+    return false;
+  }
+
+  // Logged once per name, per column.
+  //
+  // Keyed on the column and compared by *content*. An earlier version kept a
+  // single `const char*` and compared pointers, which logged on every frame:
+  // the two names alternate, so the pointer always differed from the last one
+  // seen, and a once-per-name diagnostic became hundreds of lines a second.
+  {
+    static char lastLogged[2][model::kNameLen] = {{0}, {0}};
+    const uint8_t slot = (columnX < board::kScreenWidth / 2) ? 0 : 1;
+    if (strncmp(lastLogged[slot], name, model::kNameLen) != 0) {
+      strncpy(lastLogged[slot], name, model::kNameLen - 1);
+      lastLogged[slot][model::kNameLen - 1] = '\0';
+      Serial.printf("[ui] scrolling \"%s\" (%d px in %d px column)\n", name,
+                    textPx, maxWidth);
+    }
+  }
+
+  sprite.fillSprite(colour::kBackground);
+  sprite.setTextDatum(TL_DATUM);
+  sprite.setTextColor(fg, colour::kBackground);
+  sprite.drawString(name, -marqueeOffset(textPx - maxWidth), 1, 2);
+  sprite.pushSprite(columnX - maxWidth / 2, y - kNameHeight / 2);
+  return true;
+}
+
+/// Draw both club names, centred on the same columns as their crests.
+/// @return true if either name is scrolling.
+bool drawFixtureNames(TFT_eSPI& tft, const model::Fixture& f, int16_t y) {
+  const uint16_t homeFg = f.weAreHome ? colour::kOurTeam : colour::kPrimary;
+  const uint16_t awayFg = f.weAreHome ? colour::kPrimary : colour::kOurTeam;
+  // Both are drawn before the results are combined, so a scrolling name on
+  // one side never short-circuits the other.
+  const bool homeScrolls = drawColumnName(tft, f.homeName, kHomeColumnX, y,
+                                          homeFg);
+  const bool awayScrolls = drawColumnName(tft, f.awayName, kAwayColumnX, y,
+                                          awayFg);
+  return homeScrolls || awayScrolls;
 }
 
 /// Draw the centre element — a scoreline, or "v" for an unplayed fixture.
@@ -390,6 +537,7 @@ void LastResultScreen::draw(TFT_eSPI& tft, const model::Snapshot& d) {
   formatScore(f, score, sizeof(score));
   drawFixtureCentre(tft, centreY, score, resultColour(f));
   drawFixtureNames(tft, f, namesY);
+  namesY_ = namesY;
 
   // Verdict, in the same colour language as the scoreline.
   const int8_t ours   = f.weAreHome ? f.homeGoals : f.awayGoals;
@@ -411,6 +559,11 @@ void LastResultScreen::draw(TFT_eSPI& tft, const model::Snapshot& d) {
   tft.drawString(detail, board::kScreenWidth / 2, kContentTop + 152, 2);
 }
 
+bool LastResultScreen::animate(TFT_eSPI& tft, const model::Snapshot& d) {
+  if (namesY_ == 0 || !d.lastResult.valid) return false;
+  return drawFixtureNames(tft, d.lastResult, namesY_);
+}
+
 // ---------------------------------------------------------------------------
 // Next fixture
 // ---------------------------------------------------------------------------
@@ -425,6 +578,7 @@ void NextFixtureScreen::draw(TFT_eSPI& tft, const model::Snapshot& d) {
                                  : kContentTop + 42;
   drawFixtureCentre(tft, centreY, "v", colour::kMuted);
   drawFixtureNames(tft, f, namesY);
+  namesY_ = namesY;
 
   // Form guides, one under each club, on the same side as its name. Only
   // labelled once, centrally, since two identical captions would be noise.
@@ -460,6 +614,11 @@ void NextFixtureScreen::draw(TFT_eSPI& tft, const model::Snapshot& d) {
            f.weAreHome ? "HOME" : "AWAY");
   tft.setTextColor(colour::kMuted, colour::kBackground);
   tft.drawString(detail, board::kScreenWidth / 2, kContentTop + 158, 2);
+}
+
+bool NextFixtureScreen::animate(TFT_eSPI& tft, const model::Snapshot& d) {
+  if (namesY_ == 0 || !d.nextFixture.valid) return false;
+  return drawFixtureNames(tft, d.nextFixture, namesY_);
 }
 
 // ---------------------------------------------------------------------------

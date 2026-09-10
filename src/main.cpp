@@ -60,6 +60,10 @@ store::Settings g_settings;
  */
 constexpr bool kRunStorageSelfTest = true;
 
+/// Print club name widths at boot. Only needed when changing the fixture
+/// layout or the font it uses.
+constexpr bool kMeasureNameWidths = false;
+
 /// The single mutable copy of the data. The refresh scheduler will own writes;
 /// screens only ever see it as const.
 model::Snapshot g_data;
@@ -432,6 +436,26 @@ void setup() {
   g_screens.setPriority(&g_liveMatch);
   g_screens.setEnabledMask(g_settings.screenMask);
   g_screens.begin(tft, g_data, g_settings.screenDwellMs);
+
+  // Club name widths, off by default. Kept because the layout constants in
+  // screens.cpp are derived from these numbers, so anyone changing the
+  // columns or the font can re-measure rather than guess — guessing is what
+  // truncated a name for the sake of one pixel.
+  if (kMeasureNameWidths) {
+    Serial.println();
+    Serial.println(F("=== Club name widths (Font 2) ==="));
+    static const char* kNames[] = {
+        "Bolton Wanderers", "Wolverhampton Wanderers", "Cardiff City",
+        "West Ham United", "Queens Park Rangers", "Sheffield United",
+        "Preston North End", "Norwich City", "Stoke City", "Watford",
+    };
+    for (const char* n : kNames) {
+      Serial.printf("  %-24s %3d px\n", n, tft.textWidth(n, 2));
+    }
+    Serial.printf("  --- score \"2-3\" in Font 4: %d px\n",
+                  tft.textWidth("2-3", 4));
+    Serial.printf("  --- \"v\" in Font 4: %d px\n", tft.textWidth("v", 4));
+  }
 
   power::begin();
   power::reportSleepCapabilities();
