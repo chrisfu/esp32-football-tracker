@@ -467,6 +467,47 @@ bool draw(TFT_eSPI& tft, uint16_t teamId, int16_t x, int16_t y) {
   return true;
 }
 
+bool drawHalf(TFT_eSPI& tft, uint16_t teamId, int16_t x, int16_t y) {
+  if (teamId == 0 || !available(teamId)) return false;
+
+  char path[40];
+  crestPath(teamId, path, sizeof(path));
+  File f = LittleFS.open(path, "r");
+  if (!f) return false;
+  if (f.size() != kStoredBytes) {
+    f.close();
+    return false;
+  }
+
+  uint16_t rowA[kSize], rowB[kSize], out[kHalfSize];
+  for (int16_t r = 0; r < kHalfSize; ++r) {
+    // Two source rows per output row, so each output pixel averages a 2x2
+    // block rather than picking one corner of it.
+    if (f.read(reinterpret_cast<uint8_t*>(rowA), sizeof(rowA)) !=
+            static_cast<int>(sizeof(rowA)) ||
+        f.read(reinterpret_cast<uint8_t*>(rowB), sizeof(rowB)) !=
+            static_cast<int>(sizeof(rowB))) {
+      f.close();
+      return false;
+    }
+    for (int16_t o = 0; o < kHalfSize; ++o) {
+      const uint16_t p[4] = {rowA[o * 2], rowA[o * 2 + 1], rowB[o * 2],
+                             rowB[o * 2 + 1]};
+      uint16_t rr = 0, gg = 0, bb = 0;
+      for (uint16_t v : p) {
+        rr += (v >> 11) & 0x1F;
+        gg += (v >> 5) & 0x3F;
+        bb += v & 0x1F;
+      }
+      out[o] = static_cast<uint16_t>(((rr / 4) << 11) | ((gg / 4) << 5) |
+                                     (bb / 4));
+    }
+    tft.pushImage(x, y + r, kHalfSize, 1, out);
+  }
+  f.close();
+  return true;
+}
+
 uint32_t bytesUsed() {
   File dir = LittleFS.open(kDir);
   if (!dir || !dir.isDirectory()) return 0;

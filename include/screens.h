@@ -19,9 +19,17 @@ class LiveMatchScreen : public Screen {
   bool needsRedraw() const override { return true; }
   /// Scrolls any club name too long for its column.
   bool animate(TFT_eSPI& tft, const model::Snapshot& d) override;
+  /// Takes vertical swipes to walk back through the event history.
+  bool handleGesture(touch::Gesture g) override;
+  /// Reopens on the newest events.
+  void onShow(const model::Snapshot& d) override;
 
  private:
   int16_t namesY_ = 0;
+  /// How far back through the event list the view has been scrolled.
+  uint8_t scroll_ = 0;
+  /// Whether either column holds more events than fit, set during draw().
+  bool    eventOverflow_ = false;
 };
 
 /// Season win/draw/loss record, derived from our row in the league table.

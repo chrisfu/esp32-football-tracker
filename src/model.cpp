@@ -73,11 +73,8 @@ constexpr const char* kOurTla = "BOL";
  * involving one specific club cannot be summoned to order, and the live screen
  * is the hardest part of the UI to exercise any other way:
  *
- *   PLATFORMIO_BUILD_FLAGS="-DSIMULATE_LIVE_MATCH=1" pio run --target upload
+ * The macro itself is defined in model.h, because refresh.cpp needs it too.
  */
-#ifndef SIMULATE_LIVE_MATCH
-#define SIMULATE_LIVE_MATCH 0
-#endif
 constexpr bool kSimulateLiveMatch = (SIMULATE_LIVE_MATCH != 0);
 
 /// Top scorers from /competitions/ELC/scorers. `assists` is null on the free
@@ -200,8 +197,12 @@ void loadPlaceholder(Snapshot& out) {
     setField(f.awayName, "Cardiff City FC");
     setField(f.competition, "Championship");
     f.kickoffUtc = 1789212600UL;
-    f.homeGoals  = 2;
-    f.awayGoals  = 1;
+    // Kept consistent with the seeded events: four for Bolton (Dalby x2, the
+    // penalty, Collins) plus an own goal credited to them, against two for
+    // Cardiff. A scoreline that disagreed with the events listed beneath it
+    // would make the screen look broken.
+    f.homeGoals  = 5;
+    f.awayGoals  = 2;
     f.state      = MatchState::InPlay;
     f.matchday   = 7;
     f.weAreHome  = true;
@@ -221,13 +222,25 @@ void loadPlaceholder(Snapshot& out) {
       bool        home;
       const char* player;
     };
+    // Deliberately more events than one column can show, so the newest-first
+    // window and the scrolling both get exercised — and one of every marker
+    // the renderer can draw, including a missed penalty, which the API
+    // reports as a "Goal" and which was previously drawn as a scored one.
     constexpr SeedEvent kSeedEvents[] = {
-        {23, EventKind::Goal,       false, "Cian Ashford"},
-        {38, EventKind::YellowCard, false, "Perry Ng"},
-        {52, EventKind::Goal,       true,  "Sam Dalby"},
-        {61, EventKind::YellowCard, true,  "Xavier Simons"},
-        {70, EventKind::Penalty,    true,  "Thierry Gale"},
-        {76, EventKind::RedCard,    false, "Rubin Colwill"},
+        { 9, EventKind::YellowCard,   true,  "Josh Dacres-Cogley"},
+        {17, EventKind::Goal,         true,  "Sam Dalby"},
+        {23, EventKind::Goal,         false, "Cian Ashford"},
+        {31, EventKind::MissedPenalty, true, "Thierry Gale"},
+        {38, EventKind::YellowCard,   false, "Perry Ng"},
+        {44, EventKind::OwnGoal,      true,  "Callum Chambers"},
+        {52, EventKind::Goal,         true,  "Sam Dalby"},
+        {58, EventKind::YellowCard,   true,  "John McAtee"},
+        {61, EventKind::YellowCard,   true,  "Xavier Simons"},
+        {66, EventKind::Goal,         false, "Yousef Salech"},
+        {70, EventKind::Penalty,      true,  "Thierry Gale"},
+        {74, EventKind::YellowCard,   true,  "Randell Williams"},
+        {76, EventKind::RedCard,      false, "Rubin Colwill"},
+        {79, EventKind::Goal,         true,  "Aaron Collins"},
     };
     constexpr uint8_t kEventCount =
         sizeof(kSeedEvents) / sizeof(kSeedEvents[0]);

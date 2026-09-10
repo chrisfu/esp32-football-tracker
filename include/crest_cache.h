@@ -68,6 +68,22 @@ void prune(const uint16_t* keep, uint8_t count);
  */
 bool draw(TFT_eSPI& tft, uint16_t teamId, int16_t x, int16_t y);
 
+/// Half the stored size, for screens where a full crest costs content.
+constexpr int16_t kHalfSize = kSize / 2;
+
+/**
+ * Draw a cached crest at half size, box-averaging 2x2 blocks as it reads.
+ *
+ * Averaged rather than sampled: dropping every other pixel of a crest — which
+ * is mostly lettering and thin heraldic detail — breaks strokes up visibly,
+ * and the averaging costs one extra row buffer and some adds.
+ *
+ * No second cached size is kept. At 24x24 the saving would be 1.1 KB per
+ * crest against the cost of a second decode path and a second thing to keep
+ * consistent.
+ */
+bool drawHalf(TFT_eSPI& tft, uint16_t teamId, int16_t x, int16_t y);
+
 /// Bytes currently used by cached crests, for the web UI.
 uint32_t bytesUsed();
 
