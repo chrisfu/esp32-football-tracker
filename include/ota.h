@@ -45,14 +45,30 @@ const char* currentVersion();
 const char* currentBuild();
 
 /**
+ * Whether a version is a plain numeric release: `X.Y.Z` and nothing else.
+ *
+ * `0.2.0` is stable. `0.2.0-rc1`, `0.2.0-alpha2` and `0.2.0-beta` are not.
+ * **Only stable versions are ever installed over the air** — a device on a
+ * shelf must not quietly move onto a release candidate, and the person
+ * running a pre-release has chosen to, deliberately, with a cable.
+ *
+ * A leading `v` is tolerated so a tag name works as well as a bare version.
+ */
+bool isStableVersion(const char* version);
+
+/**
  * Compare two SemVer strings.
  *
  * @return >0 if `a` is newer, <0 if older, 0 if equal.
  *
- * Only the major.minor.patch triple is compared. Build metadata after `+` is
- * ignored, which is what SemVer requires and what we want: an untagged local
- * build must never appear newer than the release it follows, or the device
- * would refuse a genuine update.
+ * The major.minor.patch triple decides first. When those are equal, a version
+ * carrying a pre-release suffix ranks *below* one without, as SemVer requires
+ * — so `0.2.0-rc1` is older than `0.2.0`, and a device running a release
+ * candidate is correctly offered the finished release.
+ *
+ * Build metadata after `+` is ignored entirely, which is also what SemVer
+ * says. That matters here: an untagged local build must never appear newer
+ * than the release it follows, or the device would refuse a genuine update.
  */
 int compareVersions(const char* a, const char* b);
 

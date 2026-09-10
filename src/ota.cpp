@@ -175,16 +175,39 @@ const char* currentBuild() {
 
 const char* lastError() { return g_lastError; }
 
+bool isStableVersion(const char* version) {
+  if (version == nullptr) return false;
+  if (*version == 'v') ++version;
+
+  int major = -1, minor = -1, patch = -1, consumed = 0;
+  if (sscanf(version, "%d.%d.%d%n", &major, &minor, &patch, &consumed) != 3) {
+    return false;
+  }
+  // The %n is the point: it tells us where parsing stopped, so anything
+  // trailing — "-rc1", "-alpha2", a stray "+build" — is rejected rather than
+  // silently ignored. Without it "0.2.0-rc1" would parse as 0.2.0 and pass.
+  if (version[consumed] != '\0') return false;
+  return major >= 0 && minor >= 0 && patch >= 0;
+}
+
 int compareVersions(const char* a, const char* b) {
   int amaj = 0, amin = 0, apat = 0, bmaj = 0, bmin = 0, bpat = 0;
+  int aConsumed = 0, bConsumed = 0;
   // Leading 'v' is tolerated so a tag name works as well as a bare version.
   if (*a == 'v') ++a;
   if (*b == 'v') ++b;
-  sscanf(a, "%d.%d.%d", &amaj, &amin, &apat);
-  sscanf(b, "%d.%d.%d", &bmaj, &bmin, &bpat);
+  sscanf(a, "%d.%d.%d%n", &amaj, &amin, &apat, &aConsumed);
+  sscanf(b, "%d.%d.%d%n", &bmaj, &bmin, &bpat, &bConsumed);
   if (amaj != bmaj) return amaj > bmaj ? 1 : -1;
   if (amin != bmin) return amin > bmin ? 1 : -1;
   if (apat != bpat) return apat > bpat ? 1 : -1;
+
+  // Triples match. A pre-release ranks below the plain release, per SemVer,
+  // so a device running 0.2.0-rc1 is correctly offered 0.2.0. Build metadata
+  // (after '+') is not a pre-release and does not affect precedence.
+  const bool aPre = (a[aConsumed] == '-');
+  const bool bPre = (b[bConsumed] == '-');
+  if (aPre != bPre) return aPre ? -1 : 1;
   return 0;
 }
 
@@ -240,6 +263,16 @@ bool checkForUpdate(const char* manifestUrl, UpdateInfo& out) {
     g_lastError = "manifest missing version or url";
     return false;
   }
+  // Pre-releases are refused here rather than merely not preferred. The
+  // manifest should only ever advertise stable builds, but the device does not
+  // rely on that: a mistake in the pipeline, or a hand-edited manifest, must
+  // not be able to push a release candidate onto a device that is simply
+  // sitting on a shelf.
+  if (!isStableVersion(out.version)) {
+    Serial.printf("[ota] refusing non-stable release \"%s\"\n", out.version);
+    g_lastError = "manifest advertises a pre-release; ignoring";
+    return false;
+  }
   // A manifest without a hash is refused rather than trusted. The hash is the
   // only thing standing between a corrupted download and a bricked device.
   if (strlen(out.sha256) != 64) {
@@ -258,6 +291,13 @@ bool checkForUpdate(const char* manifestUrl, UpdateInfo& out) {
 bool applyUpdate(const UpdateInfo& info, ProgressFn progress) {
   if (!info.available) {
     g_lastError = "no update available";
+    return false;
+  }
+  // Checked again at the point of installing, not just when the manifest was
+  // read. The two happen at different times and the struct is reachable from
+  // elsewhere; re-asserting the rule costs nothing and closes the gap.
+  if (!isStableVersion(info.version)) {
+    g_lastError = "refusing to install a pre-release";
     return false;
   }
 

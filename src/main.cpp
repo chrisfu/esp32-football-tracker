@@ -29,6 +29,7 @@
 #include "model.h"
 #include "api_client.h"
 #include "network.h"
+#include "ota.h"
 #include "providers.h"
 #include "refresh.h"
 #include "screen.h"
@@ -139,6 +140,76 @@ void ledSet(bool red, bool green, bool blue) {
 }
 
 /**
+ * Check the version rules against a table of cases.
+ *
+ * These two functions decide whether firmware installs, and getting either
+ * wrong is expensive in both directions — a device that refuses genuine
+ * updates, or one that installs a release candidate on its own. Run on the
+ * target rather than the host so it exercises the code that actually ships,
+ * including this compiler's sscanf.
+ */
+void versionSelfTest() {
+  Serial.println();
+  Serial.println(F("=== Version rules self-test ==="));
+  uint8_t failures = 0;
+
+  struct StableCase { const char* v; bool stable; };
+  static const StableCase kStable[] = {
+      {"0.2.0", true},        {"v0.2.0", true},
+      {"1.10.3", true},       {"0.0.0", true},
+      {"0.2.0-rc1", false},   {"0.2.0-alpha2", false},
+      {"0.2.0-beta", false},  {"v1.0.0-rc.1", false},
+      // Build metadata is not a stable release identifier either: only a
+      // published X.Y.Z should ever be installed.
+      {"0.2.0+4.gabc123", false},
+      {"0.2", false},         {"0.2.0.1", false},
+      {"", false},            {"garbage", false},
+  };
+  for (const StableCase& c : kStable) {
+    const bool got = ota::isStableVersion(c.v);
+    if (got != c.stable) {
+      Serial.printf("  FAIL isStable(\"%s\") = %d, want %d\n", c.v, got,
+                    c.stable);
+      ++failures;
+    }
+  }
+
+  struct CompareCase { const char* a; const char* b; int sign; };
+  static const CompareCase kCompare[] = {
+      {"0.2.0", "0.1.0", 1},
+      {"0.1.0", "0.2.0", -1},
+      {"1.0.0", "0.9.9", 1},
+      {"0.2.0", "0.2.0", 0},
+      // Numeric, not lexical: a string compare would put 0.9.0 above 0.10.0.
+      {"0.10.0", "0.9.0", 1},
+      {"1.2.10", "1.2.9", 1},
+      // A pre-release ranks below the plain release of the same triple, so a
+      // device on a release candidate is offered the finished version.
+      {"0.2.0", "0.2.0-rc1", 1},
+      {"0.2.0-rc1", "0.2.0", -1},
+      {"0.2.0-rc1", "0.2.0-rc2", 0},  // Both pre-release; triples equal.
+      // Build metadata never affects precedence, which is what stops a local
+      // dirty build looking newer than the release it follows.
+      {"0.2.0+4.gabc123", "0.2.0", 0},
+      {"v0.3.0", "0.2.0", 1},
+  };
+  for (const CompareCase& c : kCompare) {
+    const int got = ota::compareVersions(c.a, c.b);
+    const int gotSign = (got > 0) ? 1 : (got < 0 ? -1 : 0);
+    if (gotSign != c.sign) {
+      Serial.printf("  FAIL compare(\"%s\",\"%s\") = %d, want sign %d\n",
+                    c.a, c.b, got, c.sign);
+      ++failures;
+    }
+  }
+
+  const uint8_t total = (sizeof(kStable) / sizeof(kStable[0])) +
+                        (sizeof(kCompare) / sizeof(kCompare[0]));
+  Serial.printf("[selftest] version rules: %u of %u passed\n",
+                total - failures, total);
+}
+
+/**
  * Prove the cache round-trips on the real filesystem.
  *
  * Checks the parts that are easy to get subtly wrong: that a write is
@@ -234,7 +305,10 @@ void setup() {
   // not fatal: the device runs from live fetches with defaults.
   store::begin();
   store::loadSettings(g_settings);
-  if (kRunStorageSelfTest) storageSelfTest();
+  if (kRunStorageSelfTest) {
+    storageSelfTest();
+    versionSelfTest();
+  }
 
   backlightSet(g_settings.brightness);
 
