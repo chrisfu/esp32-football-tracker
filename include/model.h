@@ -17,6 +17,21 @@
 
 #include <stdint.h>
 
+/**
+ * Simulate a match in progress, for developing the live screen.
+ *
+ * Defined here rather than in model.cpp because refresh.cpp needs it too —
+ * it has to skip the real live fetch, which would otherwise overwrite the
+ * simulated fixture. Having it in one .cpp meant the project compiled only
+ * when the flag happened to be passed on the command line, which is how a
+ * broken default build went unnoticed through two rounds of testing.
+ *
+ *   PLATFORMIO_BUILD_FLAGS="-DSIMULATE_LIVE_MATCH=1" pio run --target upload
+ */
+#ifndef SIMULATE_LIVE_MATCH
+#define SIMULATE_LIVE_MATCH 0
+#endif
+
 namespace model {
 
 /// Fixed-size strings throughout: no heap, no fragmentation, predictable cost.
@@ -112,6 +127,16 @@ struct Fixture {
 enum class EventKind : uint8_t {
   Goal,
   Penalty,     ///< Scored from the spot; worth distinguishing.
+  /**
+   * A penalty that was *not* scored.
+   *
+   * The API reports this as type "Goal" with detail "Missed Penalty", which is
+   * a trap: matching "Penalty" anywhere in the detail classifies a miss as a
+   * scored penalty, and the screen then shows a goal that never happened while
+   * the scoreline says otherwise. Confirmed present in live data — two of
+   * them across 29 fixtures.
+   */
+  MissedPenalty,
   OwnGoal,     ///< Counts for the *other* side, so the side shown is flipped.
   YellowCard,
   RedCard,

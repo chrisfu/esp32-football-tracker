@@ -343,6 +343,13 @@ void drawEventMarker(TFT_eSPI& tft, model::EventKind kind, int16_t cx,
       tft.drawPixel(cx - 1, cy, TFT_BLACK);
       tft.drawPixel(cx + 1, cy, TFT_BLACK);
       break;
+    case model::EventKind::MissedPenalty:
+      // Hollow, so it reads as an absence rather than a goal, and in the
+      // losing colour because that is what a miss is for the side that took
+      // it.
+      tft.drawCircle(cx, cy, 4, colour::kLoss);
+      tft.drawLine(cx - 3, cy - 3, cx + 3, cy + 3, colour::kLoss);
+      break;
     case model::EventKind::OwnGoal:
       tft.fillCircle(cx, cy, 4, colour::kLoss);
       break;
@@ -361,9 +368,10 @@ void drawEventMarker(TFT_eSPI& tft, model::EventKind kind, int16_t cx,
 /// Suffix marking an event that needs a word of explanation.
 const char* eventSuffix(model::EventKind kind) {
   switch (kind) {
-    case model::EventKind::Penalty: return " (pen)";
-    case model::EventKind::OwnGoal: return " (og)";
-    default:                        return "";
+    case model::EventKind::Penalty:       return " (pen)";
+    case model::EventKind::MissedPenalty: return " (pen miss)";
+    case model::EventKind::OwnGoal:       return " (og)";
+    default:                              return "";
   }
 }
 
@@ -382,11 +390,22 @@ void LiveMatchScreen::draw(TFT_eSPI& tft, const model::Snapshot& d) {
   // or scrolled. Names sit on the score's own row, so consistency costs no
   // vertical space here.
   const int16_t scoreY = kContentTop + 16;
+
+  // Crests at half size, on the score's own row. Measured: a 24 px crest fits
+  // inside the height the Font 4 score already occupies, so it costs no event
+  // rows at all — where a full 48 px crest would cost one per column.
+  crest::drawHalf(tft, f.homeId, kHomeColumnX - crest::kHalfSize / 2,
+                  scoreY - crest::kHalfSize / 2);
+  crest::drawHalf(tft, f.awayId, kAwayColumnX - crest::kHalfSize / 2,
+                  scoreY - crest::kHalfSize / 2);
+
   char score[12];
   formatScore(f, score, sizeof(score));
   drawFixtureCentre(tft, scoreY, score, colour::kPrimary);
-  drawFixtureNames(tft, f, scoreY);
-  namesY_ = scoreY;
+  // Names below the crests, on the same columns.
+  const int16_t liveNamesY = scoreY + crest::kHalfSize / 2 + 10;
+  drawFixtureNames(tft, f, liveNamesY);
+  namesY_ = liveNamesY;
 
   // --- Clock and state ----------------------------------------------------
   char clock[24];
@@ -401,14 +420,14 @@ void LiveMatchScreen::draw(TFT_eSPI& tft, const model::Snapshot& d) {
   }
   tft.setTextDatum(MC_DATUM);
   tft.setTextColor(colour::kAccent, colour::kBackground);
-  tft.drawString(clock, board::kScreenWidth / 2, kContentTop + 40, 2);
+  tft.drawString(clock, board::kScreenWidth / 2, liveNamesY + 18, 2);
 
   // --- Event columns ------------------------------------------------------
   // Home left, away right, each in chronological order, so the shape of the
   // match reads without having to work out which side a line belongs to.
   constexpr int16_t kDividerX  = board::kScreenWidth / 2;
   constexpr int16_t kRowHeight = 14;
-  const int16_t colTop = kContentTop + 54;
+  const int16_t colTop = liveNamesY + 32;
 
   tft.drawFastHLine(0, colTop - 6, board::kScreenWidth, colour::kMuted);
   tft.drawFastVLine(kDividerX, colTop - 4, kContentBottom - colTop + 2,
@@ -424,13 +443,35 @@ void LiveMatchScreen::draw(TFT_eSPI& tft, const model::Snapshot& d) {
 
   // Rows are allocated per column, so a busy half for one side does not push
   // the other side's events down the screen.
-  int16_t nextRow[2] = {colTop, colTop};
   const int16_t maxY = kContentBottom - kRowHeight;
+  const uint8_t visibleRows =
+      static_cast<uint8_t>((maxY - colTop) / kRowHeight + 1);
+
+  // Count each column's events so the *most recent* can be shown.
+  //
+  // The first version filled each column from the oldest event and dropped
+  // whatever no longer fit — which on a busy live match hid the newest
+  // incidents, exactly the ones being watched for. Now the window sits at the
+  // end of the list, and scroll_ walks it back through history.
+  uint8_t total[2] = {0, 0};
+  for (uint8_t i = 0; i < m.eventCount; ++i) ++total[m.events[i].home ? 0 : 1];
+
+  uint8_t seen[2] = {0, 0};
+  int16_t nextRow[2] = {colTop, colTop};
+  eventOverflow_ = (total[0] > visibleRows) || (total[1] > visibleRows);
 
   for (uint8_t i = 0; i < m.eventCount; ++i) {
     const model::MatchEvent& e = m.events[i];
     const uint8_t col = e.home ? 0 : 1;
-    if (nextRow[col] > maxY) continue;  // That column is full.
+    const uint8_t index = seen[col]++;
+
+    // Window over this column's events: newest by default, older as scroll_
+    // increases.
+    const int16_t windowEnd =
+        static_cast<int16_t>(total[col]) - static_cast<int16_t>(scroll_);
+    const int16_t windowStart = windowEnd - visibleRows;
+    if (index < windowStart || index >= windowEnd) continue;
+    if (nextRow[col] > maxY) continue;
 
     const int16_t left = (col == 0) ? 2 : kDividerX + 4;
     const int16_t cy   = nextRow[col] + kRowHeight / 2;
@@ -455,6 +496,39 @@ void LiveMatchScreen::draw(TFT_eSPI& tft, const model::Snapshot& d) {
 
     nextRow[col] += kRowHeight;
   }
+
+  // Say so when there is history above, since otherwise a scrollable list is
+  // indistinguishable from a complete one.
+  if (eventOverflow_) {
+    tft.setTextDatum(BR_DATUM);
+    tft.setTextColor(colour::kMuted, colour::kBackground);
+    tft.drawString(scroll_ > 0 ? "swipe down for newer" : "swipe up for older",
+                   board::kScreenWidth - 3, kContentBottom - 1, 1);
+  }
+}
+
+bool LiveMatchScreen::handleGesture(touch::Gesture g) {
+  if (!eventOverflow_) return false;  // Nothing hidden; let it navigate.
+  switch (g) {
+    case touch::Gesture::SwipeUp:
+      // Up walks back into history; the cap is generous because the event
+      // list is bounded at kMaxEvents anyway.
+      if (scroll_ >= model::LiveMatch::kMaxEvents) return false;
+      ++scroll_;
+      return true;
+    case touch::Gesture::SwipeDown:
+      if (scroll_ == 0) return false;
+      --scroll_;
+      return true;
+    default:
+      return false;
+  }
+}
+
+void LiveMatchScreen::onShow(const model::Snapshot&) {
+  // Always open on the newest events. Someone returning to a live match wants
+  // what just happened, not where they had scrolled to earlier.
+  scroll_ = 0;
 }
 
 bool LiveMatchScreen::animate(TFT_eSPI& tft, const model::Snapshot& d) {

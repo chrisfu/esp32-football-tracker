@@ -561,7 +561,12 @@ api::Result fetchLiveMatch(model::Snapshot& out) {
 
       model::EventKind kind;
       if (strcmp(type, "Goal") == 0) {
-        if (strstr(detail, "Penalty") != nullptr) {
+        // "Missed Penalty" is tested before "Penalty", because it contains it.
+        // Checking for "Penalty" first classified a miss as a scored penalty
+        // and drew a goal that never happened.
+        if (strstr(detail, "Missed") != nullptr) {
+          kind = model::EventKind::MissedPenalty;
+        } else if (strstr(detail, "Penalty") != nullptr) {
           kind = model::EventKind::Penalty;
         } else if (strstr(detail, "Own") != nullptr) {
           kind = model::EventKind::OwnGoal;
@@ -583,6 +588,9 @@ api::Result fetchLiveMatch(model::Snapshot& out) {
       // An own goal is filed under the side that benefits, which is the side
       // that did *not* score it.
       const bool scoredByHome = (eventTeam == homeId);
+      // An own goal is filed under the side that benefits. A *missed* penalty
+      // is not — it stays with the team that missed it, because nobody
+      // benefits from it in a way worth showing under their name.
       dst.home = (kind == model::EventKind::OwnGoal) ? !scoredByHome
                                                      : scoredByHome;
       setField(dst.player, e["player"]["name"] | "");

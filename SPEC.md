@@ -239,9 +239,46 @@ fixture with `time.elapsed`, `type` (`Goal`, `Card`, `subst`), `detail`
 (`Yellow Card`, `Red Card`, `Normal Goal`, `Penalty`, `Own Goal`), `player`,
 `assist` and `team`.
 
+#### Event vocabulary, as observed
+
+Enumerated from 29 live fixtures rather than from documentation:
+
+| `type` | `detail` | Shown |
+|---|---|---|
+| `Goal` | `Normal Goal` | ✅ filled green circle |
+| `Goal` | `Penalty` | ✅ green circle, centre marked, `(pen)` |
+| `Goal` | `Own Goal` | ✅ filled red circle, `(og)`, filed under the side that benefits |
+| `Goal` | `Missed Penalty` | ✅ hollow red circle with a slash, `(pen miss)` |
+| `Card` | `Yellow Card` | ✅ yellow rectangle |
+| `Card` | `Red Card` | ✅ red rectangle |
+| `subst` | `Substitution 1`–`5` | ❌ deliberately excluded |
+
+**`Missed Penalty` arrives as a `Goal`.** Matching "Penalty" anywhere in the
+detail therefore classified a miss as a scored penalty, and the screen drew a
+goal that never happened while the scoreline said otherwise. "Missed" is now
+tested first. Two such events appeared across 29 fixtures, so it is not rare.
+
+Also present and currently unused: `assist` (the assisting player, on some
+goals) and `comments`. `Var` is documented by the provider but did not appear
+in the sample; unrecognised types are skipped rather than guessed at.
+
 **Layout:** two columns, home left and away right, each listing that team's
 events in chronological order — so the shape of the match reads at a glance
 without having to parse which side each line belongs to.
+
+**The window sits on the newest events, and scrolls back.** The first version
+filled each column from the oldest event and dropped whatever no longer fit,
+which on a busy match hid the most recent incidents — precisely the ones being
+watched for. Swipe up walks back through the history, swipe down returns, and
+the screen reopens on the newest. A hint appears only when something is
+actually hidden.
+
+**Crests are drawn at half size, and cost nothing.** Measured against the
+vertical budget: a 24 px crest fits inside the height the Font 4 score already
+occupies, so no event rows are lost, where a full 48 px crest would cost one
+row per column. They are box-averaged down from the cached 48 px rather than
+sampled — a crest is mostly lettering and thin heraldic detail, and dropping
+every other pixel visibly breaks strokes up.
 
 **Substitutions are deliberately excluded.** They are available, but on a
 320×240 panel screen space is the scarce resource, and a substitution tells a
