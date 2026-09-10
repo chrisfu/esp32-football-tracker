@@ -11,6 +11,7 @@
 #include <time.h>
 
 #include "api_client.h"
+#include "crest_cache.h"
 #include "providers.h"
 
 namespace refresh {
@@ -61,6 +62,7 @@ Task g_tasks[] = {
     {"matches",   kMatchesIntervalS,   0, providers::fetchOurMatches},
     {"fixture",   kFixtureIntervalS,   0, providers::fetchNextFixture},
     {"scorers",   kScorersIntervalS,   0, providers::fetchScorers},
+    {"oppform",   kMatchesIntervalS,   0, providers::fetchOpponentForm},
 };
 constexpr uint8_t kTaskCount = sizeof(g_tasks) / sizeof(g_tasks[0]);
 
@@ -119,6 +121,80 @@ void noteGoals(const model::Snapshot& s, uint32_t now) {
     g_lastGoalTotal = total;
     g_lastGoalSeenAt = now;
   }
+}
+
+/**
+ * Keep exactly the crests that are currently worth having.
+ *
+ * At most four: our team, the last opponent, the next opponent, and whoever
+ * we are playing right now. Caching a whole division would be pointless when
+ * the team is chosen by the user — and wrong, since the interesting set moves
+ * every matchday.
+ *
+ * Crests cost no API quota (the crest host is static, not the rate-limited
+ * API), so this is bounded only by time and flash, both of which are cheap
+ * here. It runs after the fixtures are known, since that is what determines
+ * the set.
+ */
+/// Ids synced on the last pass, so unchanged sets are not re-examined.
+uint16_t g_syncedCrests[4] = {0, 0, 0, 0};
+uint8_t  g_syncedCount     = 0;
+uint32_t g_lastCrestTryAt  = 0;
+
+/// Retry interval for a crest that failed to download, so a persistent
+/// failure (a team with no crest on file, say) costs one attempt every few
+/// minutes rather than one per second.
+constexpr uint32_t kCrestRetryS = 300;
+
+void syncCrests(const model::Snapshot& s, const store::Settings& settings) {
+  uint16_t wanted[4];
+  uint8_t  count = 0;
+
+  const auto add = [&](uint16_t id) {
+    if (id == 0 || count >= 4) return;
+    for (uint8_t i = 0; i < count; ++i) {
+      if (wanted[i] == id) return;  // Already listed.
+    }
+    wanted[count++] = id;
+  };
+
+  add(settings.footballDataTeamId);
+  if (s.lastResult.valid)  add(model::Snapshot::opponentOf(s.lastResult));
+  if (s.nextFixture.valid) add(model::Snapshot::opponentOf(s.nextFixture));
+  add(s.liveOpponentId);
+
+  // Has anything actually changed, and is anything missing?
+  bool setChanged = (count != g_syncedCount);
+  for (uint8_t i = 0; i < count && !setChanged; ++i) {
+    if (wanted[i] != g_syncedCrests[i]) setChanged = true;
+  }
+  bool anyMissing = false;
+  for (uint8_t i = 0; i < count; ++i) {
+    if (!crest::available(wanted[i])) anyMissing = true;
+  }
+  if (!setChanged && !anyMissing) return;  // Nothing to do.
+
+  const uint32_t now = nowUtc();
+  // Rate-limit retries. Without this a crest that cannot be downloaded would
+  // be attempted on every pass forever.
+  if (!setChanged && g_lastCrestTryAt != 0 &&
+      now - g_lastCrestTryAt < kCrestRetryS) {
+    return;
+  }
+  g_lastCrestTryAt = now;
+
+  // Prune first: freeing space before downloading matters on a filesystem
+  // shared with the JSON cache.
+  if (setChanged) crest::prune(wanted, count);
+
+  for (uint8_t i = 0; i < count; ++i) {
+    if (!crest::available(wanted[i])) crest::ensure(wanted[i]);
+  }
+
+  memcpy(g_syncedCrests, wanted, sizeof(uint16_t) * count);
+  g_syncedCount = count;
+  Serial.printf("[crest] set synced (%u wanted, %lu bytes on disk)\n", count,
+                (unsigned long)crest::bytesUsed());
 }
 
 /// One pass of the scheduler. Returns true if anything was fetched.
@@ -233,7 +309,15 @@ void fetchTask(void*) {
       seedScheduleFromCache(now);
     }
 
-    if (runDue(now)) {
+    const bool fetched = runDue(now);
+
+    // Crests are synced whether or not anything was fetched. An earlier
+    // version only did this after a fetch, so a device starting with a warm
+    // cache — the normal case after any reboot — never downloaded a crest at
+    // all, because nothing was due.
+    if (g_settings != nullptr) syncCrests(g_staging, *g_settings);
+
+    if (fetched) {
       g_ready = true;
       if (!g_primed) g_primed = true;
     }
@@ -249,6 +333,7 @@ void begin(const store::Settings& settings, const model::Snapshot& initial) {
 
   api::begin(settings.apiSportsKey, settings.footballDataKey);
   providers::begin(settings);
+  crest::begin();
 
   // Restore whatever the cache holds before any fetching. Two benefits: the
   // screens show real data almost immediately rather than after six seconds

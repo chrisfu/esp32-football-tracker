@@ -66,6 +66,15 @@ struct Fixture {
   char       homeName[kNameLen] = {0};
   char       awayName[kNameLen] = {0};
   char       competition[kCompLen] = {0};
+  /**
+   * Provider team ids, retained rather than discarded after matching.
+   *
+   * Needed for two things that were previously stubbed out: fetching the
+   * opponent's form, and knowing which crest to download. These are
+   * football-data ids specifically — api-sports numbers teams differently.
+   */
+  uint16_t   homeId = 0;
+  uint16_t   awayId = 0;
   /// Unix seconds, UTC. 32 bits is good until 2106.
   uint32_t   kickoffUtc = 0;
   /// -1 means "no score yet" rather than 0-0, which is a real scoreline.
@@ -188,6 +197,16 @@ struct Snapshot {
   Scorer  teamScorers[kMaxScorers];
   uint8_t teamScorerCount = 0;
 
+  /**
+   * The opponent of a match in progress, as a football-data id.
+   *
+   * Captured when the fixture list identifies which upcoming match has gone
+   * live, because the live feed comes from api-sports and its team ids are
+   * from a different space entirely — there is no way to derive one from the
+   * other, so the association has to be recorded when it is known.
+   */
+  uint16_t liveOpponentId = 0;
+
   char competitionName[kCompLen] = {0};
   /// Season's current matchday, for context on the table screen.
   uint8_t matchday = 0;
@@ -195,6 +214,11 @@ struct Snapshot {
   /// Convenience: our team's table row, or nullptr if we do not have it.
   const TableRow* ourTeam() const {
     return ourRow < tableRows ? &table[ourRow] : nullptr;
+  }
+
+  /// The opponent in a fixture, from our point of view.
+  static uint16_t opponentOf(const Fixture& f) {
+    return f.weAreHome ? f.awayId : f.homeId;
   }
 };
 

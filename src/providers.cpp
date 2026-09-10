@@ -78,7 +78,9 @@ void readFixture(JsonObjectConst m, uint16_t ourId, model::Fixture& f) {
   f.kickoffUtc = parseIso8601(m["utcDate"] | "");
   f.matchday   = m["matchday"] | 0;
   f.state      = parseState(m["status"] | "");
-  f.weAreHome  = (home["id"] | 0) == ourId;
+  f.homeId     = home["id"] | 0;
+  f.awayId     = away["id"] | 0;
+  f.weAreHome  = (f.homeId == ourId);
 
   JsonVariantConst ft = m["score"]["fullTime"];
   // A goal count of null means "not played", which is a different thing from
@@ -348,7 +350,14 @@ void parseNextFixtureImpl(const JsonDocument& doc, model::Snapshot& out) {
     // Skip the match being played, so Next never duplicates Live. Matched on
     // kick-off rather than id because the two providers number fixtures
     // differently and only the time is common to both.
-    if (liveKickoff != 0 && f.kickoffUtc == liveKickoff) continue;
+    if (liveKickoff != 0 && f.kickoffUtc == liveKickoff) {
+      // This is the match being played. Remember the opponent before moving
+      // on: the live feed is api-sports, whose team ids are unrelated to
+      // football-data's, so this is the only point at which the two can be
+      // associated.
+      out.liveOpponentId = model::Snapshot::opponentOf(f);
+      continue;
+    }
     // Preserve any form already derived for our side.
     char ourForm[model::kFormLen];
     strncpy(ourForm,
@@ -375,22 +384,50 @@ void parseNextFixtureImpl(const JsonDocument& doc, model::Snapshot& out) {
 api::Result fetchOpponentForm(model::Snapshot& out) {
   if (!out.nextFixture.valid) return api::Result::Ok;
 
-  // The opponent is whichever side we are not.
-  const char* opponentName = out.nextFixture.weAreHome
-                                 ? out.nextFixture.awayName
-                                 : out.nextFixture.homeName;
-  if (opponentName[0] == '\0') return api::Result::Ok;
+  const uint16_t opponentId = model::Snapshot::opponentOf(out.nextFixture);
+  if (opponentId == 0) return api::Result::Ok;
 
-  // We need their football-data id, which the fixture filter did not keep for
-  // the opposing side. Rather than spend a lookup request, the id is taken
-  // from the standings table we already hold.
-  uint16_t opponentId = 0;
-  (void)opponentId;
+  // Only refetch when the opponent actually changes, which is roughly once a
+  // matchday. Their form is not going to move between our own fixtures.
+  static uint16_t lastFetchedFor = 0;
+  if (opponentId == lastFetchedFor) return api::Result::Ok;
 
-  // Without an id we cannot query their matches, so their form is left empty
-  // and the renderer simply draws nothing. Resolving this needs the team id
-  // retained from the fixture, which is a follow-up rather than a reason to
-  // spend an extra request here.
+  JsonDocument filter;
+  buildMatchFilter(filter);
+
+  char path[80];
+  snprintf(path, sizeof(path), "/v4/teams/%u/matches?status=FINISHED&limit=6",
+           opponentId);
+
+  JsonDocument doc;
+  const api::Response r =
+      api::fetch(api::Provider::FootballData, path, doc, filter);
+  if (!r.ok()) return r.result;
+
+  // Same derivation as our own form, from the opponent's point of view.
+  char form[model::kFormLen] = {0};
+  uint8_t formLen = 0;
+  for (JsonObjectConst m : doc["matches"].as<JsonArrayConst>()) {
+    model::Fixture f;
+    readFixture(m, opponentId, f);  // "We" are the opponent here.
+    if (f.state != model::MatchState::Finished) continue;
+    const char c = resultChar(f);
+    if (c == 0) continue;
+    if (formLen < model::kFormLen - 1) {
+      form[formLen++] = c;
+    } else {
+      memmove(form, form + 1, model::kFormLen - 2);
+      form[model::kFormLen - 2] = c;
+    }
+  }
+  form[formLen < model::kFormLen ? formLen : model::kFormLen - 1] = '\0';
+
+  // Their form belongs on whichever side of our fixture they occupy.
+  setField(out.nextFixture.weAreHome ? out.nextFixture.awayForm
+                                     : out.nextFixture.homeForm,
+           form);
+  lastFetchedFor = opponentId;
+  Serial.printf("[prov] opponent %u form \"%s\"\n", opponentId, form);
   return api::Result::Ok;
 }
 
