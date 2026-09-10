@@ -7,9 +7,14 @@ name: Release
 # This then builds the firmware, publishes it as a release asset, and updates
 # the manifest the devices poll. Nothing is edited by hand, so the tag, the
 # binary and the manifest cannot disagree.
+# Stable tags are v1.2.3. Pre-release tags (v1.2.3-rc1, v1.2.3-beta2) are
+# also published, but marked as pre-releases and deliberately kept out of the
+# manifest — devices only ever install plain numbered releases.
 on:
   push:
-    tags: ['v[0-9]+.[0-9]+.[0-9]+']
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+      - 'v[0-9]+.[0-9]+.[0-9]+-*'
   workflow_dispatch:
     inputs:
       tag:
@@ -35,7 +40,7 @@ jobs:
       - name: Install PlatformIO
         run: pip install --upgrade platformio
 
-      - name: Resolve version
+      - name: Resolve version and stability
         id: version
         run: |
           TAG="${GITHUB_REF_NAME}"
@@ -43,8 +48,22 @@ jobs:
             TAG="${{ github.event.inputs.tag }}"
           fi
           VERSION="${TAG#v}"
+
+          # Stable means a plain numeric triple and nothing else. This single
+          # test decides three things: whether the release is marked stable,
+          # whether it becomes "Latest", and whether the manifest devices poll
+          # is updated. Keeping it in one place is why those cannot disagree.
+          if printf '%s' "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            STABLE=true
+          else
+            STABLE=false
+          fi
+
           echo "tag=$TAG"         >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "stable=$STABLE"   >> "$GITHUB_OUTPUT"
+          echo "Tag $TAG -> version $VERSION (stable: $STABLE)"
+
           # Keep the VERSION fallback file honest, so a source archive with no
           # git metadata still reports the right version.
           echo "$VERSION" > VERSION
@@ -63,6 +82,17 @@ jobs:
             exit 1
           fi
           echo "Binary reports $EXPECTED"
+
+          # A stable release must not be built from a tag the version plumbing
+          # would treat as a pre-release, and vice versa. Catching a mismatch
+          # here is far better than shipping a binary whose own idea of its
+          # stability differs from the release it is attached to.
+          if [ "${{ steps.version.outputs.stable }}" = "true" ]; then
+            if printf '%s' "$EXPECTED" | grep -q -- '-'; then
+              echo "::error::marked stable but version contains a suffix"
+              exit 1
+            fi
+          fi
 
       - name: Build the manifest
         id: manifest
@@ -89,17 +119,22 @@ jobs:
           echo "size=$SIZE" >> "$GITHUB_OUTPUT"
           cat firmware/manifest.json
 
-      - name: Publish the release
+      - name: Publish a stable release
+        if: steps.version.outputs.stable == 'true'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.version.outputs.tag }}
-          name: v${{ steps.version.outputs.version }}
+          name: v${{ steps.version.outputs.version }} — Stable
           generate_release_notes: true
+          prerelease: false
+          make_latest: true
           files: |
             .pio/build/cyd/firmware.bin
             firmware/manifest.json
           body: |
             ## ESP32 Football Tracker v${{ steps.version.outputs.version }}
+
+            ✅ **Stable release.** Offered to devices over the air.
 
             **Over-the-air:** devices checking daily will offer this
             automatically. Installing always needs a button press.
@@ -116,7 +151,41 @@ jobs:
             Published binaries contain **no API keys** — enter your own on the
             device's Settings page.
 
+      - name: Publish a pre-release
+        if: steps.version.outputs.stable != 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: v${{ steps.version.outputs.version }} — Pre-release
+          generate_release_notes: true
+          prerelease: true
+          make_latest: false
+          # The manifest is deliberately NOT attached. Publishing one here
+          # would invite someone to point a device at it, which is exactly
+          # what this release must not be used for.
+          files: |
+            .pio/build/cyd/firmware.bin
+          body: |
+            ## ESP32 Football Tracker v${{ steps.version.outputs.version }}
+
+            ⚠️ **Pre-release. Not distributed over the air.**
+
+            Devices only ever install plain numbered releases, so this will
+            never be offered automatically — and the firmware refuses to
+            install a pre-release even if a manifest advertises one. Install it
+            deliberately: upload `firmware.bin` from the System page, or flash
+            over USB with `pio run --target upload`.
+
+            | | |
+            |---|---|
+            | Size | ${{ steps.manifest.outputs.size }} bytes |
+            | SHA-256 | `${{ steps.manifest.outputs.sha }}` |
+
       - name: Update the manifest devices poll
+        # Stable releases only. A pre-release must not touch the manifest, or
+        # every device polling it would be offered a release candidate — which
+        # is the whole thing this separation prevents.
+        if: steps.version.outputs.stable == 'true'
         # Committed to the default branch so the device has a stable URL that
         # needs no redirect and no API call. raw.githubusercontent.com serves
         # a Let's Encrypt certificate, which the firmware already trusts.

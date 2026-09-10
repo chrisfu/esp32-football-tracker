@@ -21,6 +21,34 @@ git push origin v0.2.0
 4. Publishes a GitHub Release with `firmware.bin` and the manifest attached.
 5. Commits the manifest to `main`, which is the stable URL devices poll.
 
+## Stable releases and pre-releases
+
+**Only plain numbered releases are distributed over the air.**
+
+| Tag | Published as | In the manifest? | Offered over the air? |
+|---|---|---|---|
+| `v0.2.0` | ✅ Stable, marked **Latest** | Yes | Yes |
+| `v0.2.0-rc1` | ⚠️ **Pre-release** | No | No |
+| `v0.2.0-beta.2` | ⚠️ **Pre-release** | No | No |
+
+A pre-release still gets a GitHub Release with a binary attached — it is just
+kept out of the manifest devices poll, and GitHub marks it so nobody installs
+it by accident.
+
+This is enforced in three independent places, deliberately:
+
+1. **The workflow** only updates the manifest for a stable tag.
+2. **`checkForUpdate()`** refuses a manifest advertising a pre-release, so a
+   pipeline mistake or a hand-edited manifest cannot push a release candidate
+   onto a device sitting on a shelf.
+3. **`applyUpdate()`** checks again at the moment of installing.
+
+The firmware and the workflow use the same rule — `^\d+\.\d+\.\d+$` — and
+both are tested against the same table of tag names.
+
+Installing a pre-release is therefore a deliberate act: upload it from the
+System page, or flash over USB.
+
 ## Versioning
 
 The version comes from `git describe`, so there is nothing to edit:
@@ -31,6 +59,17 @@ The version comes from `git describe`, so there is nothing to edit:
 | 4 commits past it | `0.2.0` | `0.2.0+4.gab12cd` |
 | With local edits | `0.2.0` | `0.2.0+4.gab12cd.dirty` |
 | No git metadata | from `VERSION` | `0.2.0-nogit` |
+| On tag `v0.3.0-rc1` | `0.3.0-rc1` | `0.3.0-rc1` |
+| 4 commits past an rc | `0.3.0-rc1` | `0.3.0-rc1+4.gab12cd` |
+
+A pre-release tag keeps its suffix in `FIRMWARE_VERSION` rather than being
+reduced to the bare triple. A build from `v0.3.0-rc1` must not announce itself
+as `0.3.0`: the device's refusal to install pre-releases rests entirely on the
+version string being truthful about what it is.
+
+Note also that `-dirty` is build metadata, not a pre-release. It is stripped
+before the version is decided — otherwise a stable build with uncommitted
+edits would report itself as the pre-release `0.2.0-dirty`.
 
 Note that an untagged build keeps the *released* version in the SemVer field
 and puts the extra detail after `+`. SemVer says build metadata is ignored for
