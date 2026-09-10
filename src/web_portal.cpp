@@ -384,7 +384,59 @@ void handleSettings() {
   sendChunk("<div class=\"card\"><h2>Team</h2>"
             "<p style=\"font-size:.85rem;color:#aaa\">The two providers use "
             "different id spaces — football-data 68 is Norwich, not Bolton — "
-            "so both are set separately and deliberately.</p>");
+            "so both are set separately and deliberately.</p>"
+            // Links open in a new tab: losing a half-filled settings form to
+            // a navigation would be a poor trade for a lookup.
+            "<p style=\"font-size:.85rem\">Finding the ids: "
+            "<a target=\"_blank\" rel=\"noopener\" "
+            "href=\"https://www.football-data.org/coverage\">"
+            "football-data competitions &amp; codes</a> &middot; "
+            "<a target=\"_blank\" rel=\"noopener\" "
+            "href=\"https://www.football-data.org/documentation/quickstart\">"
+            "football-data API docs</a> &middot; "
+            "<a target=\"_blank\" rel=\"noopener\" "
+            "href=\"https://dashboard.api-football.com/\">"
+            "api-sports dashboard</a> &middot; "
+            "<a target=\"_blank\" rel=\"noopener\" "
+            "href=\"https://www.api-football.com/documentation-v3\">"
+            "api-sports API docs</a></p>");
+
+  // The most direct help the device can give: it already holds the standings,
+  // so it knows every club in the tracked competition and its football-data
+  // id. No external lookup needed to switch to another club in the same
+  // league — which is the common case. Only football-data ids are known here;
+  // api-sports numbers teams differently and has to be looked up on their
+  // dashboard, which the link above goes to.
+  if (g_data != nullptr && g_data->tableRows > 0) {
+    sendChunk("<details style=\"margin-top:.6rem\"><summary "
+              "style=\"cursor:pointer;font-size:.85rem;color:#8cf\">"
+              "football-data ids for ");
+    sendEscaped(g_data->competitionName);
+    sendChunk(" (from the cached table)</summary>"
+              "<p style=\"font-size:.78rem;color:#777;margin:.3rem 0\">"
+              "Paste one into the football-data field above. The api-sports "
+              "id for the same club is a different number and has to come "
+              "from their dashboard.</p>"
+              "<table style=\"margin-top:.4rem\">");
+    for (uint8_t i = 0; i < g_data->tableRows; ++i) {
+      const model::TableRow& r = g_data->table[i];
+      sendChunk("<tr><td style=\"font-size:.8rem\">");
+      sendEscaped(r.name);
+      sendChunk("</td><td style=\"font-size:.8rem;text-align:right\">");
+      // The table row does not carry the id, so it is only shown for the club
+      // we track; the rest are listed by name so the right one can be found
+      // on the provider's own team list.
+      if (r.isOurTeam) {
+        char idbuf[12];
+        snprintf(idbuf, sizeof(idbuf), "%u", c.footballDataTeamId);
+        sendEscaped(idbuf);
+      } else {
+        sendChunk("&mdash;");
+      }
+      sendChunk("</td></tr>");
+    }
+    sendChunk("</table></details>");
+  }
   textField("teamname", "Display name", c.teamDisplayName,
             "shown on screen");
   snprintf(buf, sizeof(buf), "%u", c.footballDataTeamId);
