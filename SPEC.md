@@ -258,39 +258,61 @@ So the last result is the *final* element of the response, not the first — and
 form is the tail of that same list, which is exactly the order the chips are
 drawn in.
 
-### 4.7 Team crests
+### 4.7 Team crests — as built
 
-Requested, and worth doing — a crest is what makes the device feel like *your*
-team's rather than a generic data display.
+A crest is what makes the device feel like *your* team's rather than a generic
+data display.
 
-**Verified from the API:** football-data.org returns a `crest` URL per team
-(`https://crests.football-data.org/60.png` for Bolton). Measured: **70×70,
-8-bit RGBA PNG, 7,736 bytes**. It also returns `clubColors` ("White / Navy
-Blue"), which could tint the UI per team.
+**Only the crests currently in use are kept**, which is the design that matters
+once the team is user-chosen: caching a whole division would be pointless and
+wrong, since the interesting set is tiny and moves every matchday.
 
-Planned approach, consistent with rules R2 and R3:
+| Kept | Why |
+|---|---|
+| Our team | Always relevant |
+| Last opponent | The Last result screen |
+| Next opponent | The Next fixture screen |
+| Current opponent | The Live match screen, when one is on |
 
-* Fetch each crest **once**, decode it on-device, and cache the result to
-  LittleFS as raw RGB565 — never re-fetch and never re-decode. Crest URLs are
-  static, so this is a permanent cache with no TTL.
-* Decode with a **streaming PNG decoder** (PNGdec), which works line by line
-  and so needs nothing like a whole-image buffer — necessary given the largest
-  contiguous heap block is ~112 KB.
-* Store at **64×64** rather than native 70×70: a power-of-two size scales
-  cleanly, and it costs 8 KB per crest, so all 24 clubs occupy **192 KB** of
-  our 1408 KB filesystem. Comfortable.
-* **Composite the alpha channel away at decode time**, against the known UI
-  background, rather than storing an alpha channel and blending every frame.
-  The trade-off: a crest cannot then sit on a differently-coloured background,
-  which is fine because the match screens have a constant one. If a crest is
-  later wanted on a highlighted row, a 1-bit mask can be stored alongside.
-* Crests appear on **Last result** and **Next fixture** (both clubs) and beside
-  our team's name on the Season screen. The league table stays text-only —
-  24 rows of icons would be unreadable at 19 px per row.
-* Fetching crests costs **zero API quota**: `crests.football-data.org` is a
-  plain static host, not the rate-limited API.
+At most four, usually three. Everything else is pruned, so the cache is
+**~14 KB regardless of which league the user follows** — measured at 13,824
+bytes for three crests.
 
-This is deferred until the network layer exists, and is tracked on the roadmap.
+**Crests cost no API quota.** `crests.football-data.org` is a static host, not
+the rate-limited API, and needs no key. It chains to ISRG Root X1, so the
+existing certificate bundle already covers it.
+
+#### Corrected assumption: crests are not one size
+
+The original plan recorded crests as 70×70, measured from Bolton's. **They
+vary considerably** — Bolton's is 70×70 at 7,736 bytes with alpha; West Ham's
+and Cardiff's are 200×200 (6,859 and 16,928 bytes) without. A decode buffer
+sized from the first crest inspected fails silently on every larger one, so the
+line buffer is allocated from the width in the file, capped at 512 px.
+
+#### Pipeline
+
+1. Download to a heap buffer sized from `Content-Length` (this host does not
+   chunk), verifying the PNG signature so an error page is distinguishable from
+   a decoder fault.
+2. Decode with PNGdec line-by-line, **box-filtering** down to 48×48. Area
+   averaging rather than nearest-neighbour: a crest is fine detail and mostly
+   lettering, and at a 200→48 reduction nearest-neighbour looks broken. The
+   accumulators cost a few hundred bytes.
+3. Composite alpha against the UI background at decode time, so the stored
+   form is opaque and drawing needs no blending.
+4. Write to a temporary and rename, as the JSON cache does — a reset mid-decode
+   must not leave a half-image that would then be drawn as noise.
+5. Draw by reading **one row at a time** into a 96-byte buffer, so the UI never
+   holds the 4.6 KB image.
+
+The decoder is **heap-allocated only while decoding**. PNGdec's `PNG` object
+embeds its inflate window, and as a static member it cost ~46 KB of DRAM
+permanently — measured as a jump from 16.6% to 30.9% — for something used once
+per crest, while TLS wants ~42 KB of heap at the same time.
+
+Crests appear on Last result, Next fixture (both clubs) and Season (ours). The
+league table stays text-only: 24 icons at 19 px per row would be unreadable.
 
 ## 5. Fetching and caching
 

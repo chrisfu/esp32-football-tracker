@@ -12,6 +12,8 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "crest_cache.h"
+
 namespace ui {
 namespace {
 
@@ -39,6 +41,25 @@ uint16_t resultColour(const model::Fixture& f) {
   if (ours > theirs) return colour::kWin;
   if (ours < theirs) return colour::kLoss;
   return colour::kDraw;
+}
+
+/**
+ * Draw both clubs' crests either side of the centre, if they are cached.
+ *
+ * @return true if at least one was drawn, so the caller knows whether to
+ *         reserve the vertical space. Falling back cleanly matters: a crest
+ *         may legitimately be missing while it is still downloading, and the
+ *         screen must not leave a hole waiting for it.
+ */
+bool drawFixtureCrests(TFT_eSPI& tft, const model::Fixture& f, int16_t y) {
+  const int16_t inset = 26;
+  bool any = false;
+  if (crest::draw(tft, f.homeId, inset, y)) any = true;
+  if (crest::draw(tft, f.awayId,
+                  board::kScreenWidth - inset - crest::kSize, y)) {
+    any = true;
+  }
+  return any;
 }
 
 /// Draw "HOME  score  AWAY" with our side highlighted, used by three screens.
@@ -220,9 +241,21 @@ void SeasonRecordScreen::draw(TFT_eSPI& tft, const model::Snapshot& d) {
 
   char name[model::kNameLen];
   shortenClubName(us->name, name, sizeof(name));
-  tft.setTextDatum(TC_DATUM);
+
+  // Our own crest, beside the name rather than above it — the name is the
+  // wider element, so pairing them horizontally wastes less vertical space.
+  const uint16_t ourId = d.nextFixture.valid
+                             ? (d.nextFixture.weAreHome ? d.nextFixture.homeId
+                                                        : d.nextFixture.awayId)
+                             : 0;
+  const bool haveCrest = crest::draw(tft, ourId, 8, kContentTop + 2);
+  tft.setTextDatum(haveCrest ? ML_DATUM : TC_DATUM);
   tft.setTextColor(colour::kOurTeam, colour::kBackground);
-  tft.drawString(name, board::kScreenWidth / 2, kContentTop + 4, 4);
+  if (haveCrest) {
+    tft.drawString(name, 8 + crest::kSize + 10, kContentTop + 26, 4);
+  } else {
+    tft.drawString(name, board::kScreenWidth / 2, kContentTop + 4, 4);
+  }
 
   // W / D / L across the middle, colour-coded consistently with results.
   const int16_t cy = kContentTop + 74;
@@ -275,9 +308,13 @@ void SeasonRecordScreen::draw(TFT_eSPI& tft, const model::Snapshot& d) {
 void LastResultScreen::draw(TFT_eSPI& tft, const model::Snapshot& d) {
   const model::Fixture& f = d.lastResult;
 
+  // Crests first, with the scoreline beneath them.
+  const bool crests = drawFixtureCrests(tft, f, kContentTop + 4);
+  const int16_t headlineY = crests ? kContentTop + 62 : kContentTop + 34;
+
   char score[8];
   formatScore(f, score, sizeof(score));
-  drawFixtureHeadline(tft, f, kContentTop + 34, score, resultColour(f));
+  drawFixtureHeadline(tft, f, headlineY, score, resultColour(f));
 
   // Verdict, in the same colour language as the scoreline.
   const int8_t ours   = f.weAreHome ? f.homeGoals : f.awayGoals;
@@ -285,18 +322,18 @@ void LastResultScreen::draw(TFT_eSPI& tft, const model::Snapshot& d) {
   const char* verdict = ours > theirs ? "WON" : (ours < theirs ? "LOST" : "DREW");
   tft.setTextDatum(MC_DATUM);
   tft.setTextColor(resultColour(f), colour::kBackground);
-  tft.drawString(verdict, board::kScreenWidth / 2, kContentTop + 84, 4);
+  tft.drawString(verdict, board::kScreenWidth / 2, headlineY + 34, 4);
 
   char when[40];
   formatKickoff(f.kickoffUtc, when, sizeof(when));
   tft.setTextColor(colour::kPrimary, colour::kBackground);
-  tft.drawString(when, board::kScreenWidth / 2, kContentTop + 120, 2);
+  tft.drawString(when, board::kScreenWidth / 2, kContentTop + 130, 2);
 
   char detail[52];
   snprintf(detail, sizeof(detail), "%s  -  Matchday %u", f.competition,
            f.matchday);
   tft.setTextColor(colour::kMuted, colour::kBackground);
-  tft.drawString(detail, board::kScreenWidth / 2, kContentTop + 144, 2);
+  tft.drawString(detail, board::kScreenWidth / 2, kContentTop + 152, 2);
 }
 
 // ---------------------------------------------------------------------------
@@ -306,11 +343,13 @@ void LastResultScreen::draw(TFT_eSPI& tft, const model::Snapshot& d) {
 void NextFixtureScreen::draw(TFT_eSPI& tft, const model::Snapshot& d) {
   const model::Fixture& f = d.nextFixture;
 
-  drawFixtureHeadline(tft, f, kContentTop + 22, "v", colour::kMuted);
+  const bool crests = drawFixtureCrests(tft, f, kContentTop + 2);
+  const int16_t headlineY = crests ? kContentTop + 58 : kContentTop + 22;
+  drawFixtureHeadline(tft, f, headlineY, "v", colour::kMuted);
 
   // Form guides, one under each club, on the same side as its name. Only
   // labelled once, centrally, since two identical captions would be noise.
-  const int16_t formY = kContentTop + 54;
+  const int16_t formY = headlineY + 26;
   const int16_t leftCx  = board::kScreenWidth / 4;
   const int16_t rightCx = board::kScreenWidth - board::kScreenWidth / 4;
   if (f.homeForm[0] != '\0' || f.awayForm[0] != '\0') {
@@ -330,18 +369,18 @@ void NextFixtureScreen::draw(TFT_eSPI& tft, const model::Snapshot& d) {
   formatCountdown(f.kickoffUtc, countdown, sizeof(countdown));
   tft.setTextDatum(MC_DATUM);
   tft.setTextColor(colour::kAccent, colour::kBackground);
-  tft.drawString(countdown, board::kScreenWidth / 2, kContentTop + 92, 4);
+  tft.drawString(countdown, board::kScreenWidth / 2, formY + 30, 4);
 
   char when[40];
   formatKickoff(f.kickoffUtc, when, sizeof(when));
   tft.setTextColor(colour::kPrimary, colour::kBackground);
-  tft.drawString(when, board::kScreenWidth / 2, kContentTop + 126, 2);
+  tft.drawString(when, board::kScreenWidth / 2, kContentTop + 136, 2);
 
   char detail[52];
   snprintf(detail, sizeof(detail), "%s  -  %s", f.competition,
            f.weAreHome ? "HOME" : "AWAY");
   tft.setTextColor(colour::kMuted, colour::kBackground);
-  tft.drawString(detail, board::kScreenWidth / 2, kContentTop + 148, 2);
+  tft.drawString(detail, board::kScreenWidth / 2, kContentTop + 158, 2);
 }
 
 // ---------------------------------------------------------------------------
