@@ -155,6 +155,17 @@ struct Settings {
   uint8_t  screenMask = 0xFF;
   bool     includeCups = false;
 
+  /// Where to look for firmware releases.
+  ///
+  /// Deliberately configurable rather than compiled in: a fork should update
+  /// from its own releases, not from this repository's.
+  static constexpr uint8_t kUrlLen = 160;
+  char otaManifestUrl[kUrlLen] = {0};
+  /// Check for updates automatically. Checking is harmless; *applying* always
+  /// needs an explicit action, because silently replacing firmware someone is
+  /// relying on is not a decision to make on their behalf.
+  bool otaAutoCheck = true;
+
   /// Persisted touch calibration, so a calibrated device stays calibrated.
   touch::Calibration touch{};
 

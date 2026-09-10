@@ -1,0 +1,137 @@
+name: Release
+
+# Cutting a release is one action: push a SemVer tag.
+#
+#   git tag -a v0.2.0 -m "..." && git push origin v0.2.0
+#
+# This then builds the firmware, publishes it as a release asset, and updates
+# the manifest the devices poll. Nothing is edited by hand, so the tag, the
+# binary and the manifest cannot disagree.
+on:
+  push:
+    tags: ['v[0-9]+.[0-9]+.[0-9]+']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to (re)publish'
+        required: true
+
+permissions:
+  contents: write   # Needed to create the release and commit the manifest.
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install PlatformIO
+        run: pip install --upgrade platformio
+
+      - name: Resolve version
+        id: version
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          if [ -n "${{ github.event.inputs.tag }}" ]; then
+            TAG="${{ github.event.inputs.tag }}"
+          fi
+          VERSION="${TAG#v}"
+          echo "tag=$TAG"         >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          # Keep the VERSION fallback file honest, so a source archive with no
+          # git metadata still reports the right version.
+          echo "$VERSION" > VERSION
+
+      - name: Build
+        run: pio run -e cyd
+
+      - name: Verify the binary reports the tagged version
+        # A mismatch here means the version plumbing is broken, and shipping a
+        # binary that misreports its own version would make OTA comparisons
+        # meaningless — the device would refuse or repeat updates forever.
+        run: |
+          EXPECTED="${{ steps.version.outputs.version }}"
+          if ! grep -qF "$EXPECTED" .pio/build/cyd/firmware.bin; then
+            echo "::error::firmware does not contain version string $EXPECTED"
+            exit 1
+          fi
+          echo "Binary reports $EXPECTED"
+
+      - name: Build the manifest
+        id: manifest
+        run: |
+          BIN=.pio/build/cyd/firmware.bin
+          VERSION="${{ steps.version.outputs.version }}"
+          TAG="${{ steps.version.outputs.tag }}"
+          SHA=$(sha256sum "$BIN" | cut -d' ' -f1)
+          SIZE=$(stat -c%s "$BIN")
+          REPO="${GITHUB_REPOSITORY}"
+
+          mkdir -p firmware
+          cat > firmware/manifest.json <<JSON
+          {
+            "version": "$VERSION",
+            "url": "https://github.com/$REPO/releases/download/$TAG/firmware.bin",
+            "size": $SIZE,
+            "sha256": "$SHA",
+            "released": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          }
+          JSON
+          cp "$BIN" "firmware-$VERSION.bin"
+          echo "sha=$SHA"   >> "$GITHUB_OUTPUT"
+          echo "size=$SIZE" >> "$GITHUB_OUTPUT"
+          cat firmware/manifest.json
+
+      - name: Publish the release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: v${{ steps.version.outputs.version }}
+          generate_release_notes: true
+          files: |
+            .pio/build/cyd/firmware.bin
+            firmware/manifest.json
+          body: |
+            ## ESP32 Football Tracker v${{ steps.version.outputs.version }}
+
+            **Over-the-air:** devices checking daily will offer this
+            automatically. Installing always needs a button press.
+
+            **Manual:** download `firmware.bin` and upload it from the
+            device's System page, or flash with
+            `pio run --target upload`.
+
+            | | |
+            |---|---|
+            | Size | ${{ steps.manifest.outputs.size }} bytes |
+            | SHA-256 | `${{ steps.manifest.outputs.sha }}` |
+
+            Published binaries contain **no API keys** — enter your own on the
+            device's Settings page.
+
+      - name: Update the manifest devices poll
+        # Committed to the default branch so the device has a stable URL that
+        # needs no redirect and no API call. raw.githubusercontent.com serves
+        # a Let's Encrypt certificate, which the firmware already trusts.
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin main
+          git checkout main
+          cp firmware/manifest.json /tmp/manifest.json
+          mkdir -p firmware && cp /tmp/manifest.json firmware/manifest.json
+          echo "${{ steps.version.outputs.version }}" > VERSION
+          git add firmware/manifest.json VERSION
+          if git diff --cached --quiet; then
+            echo "manifest unchanged"
+          else
+            git commit -m "chore: publish v${{ steps.version.outputs.version }} manifest [skip ci]"
+            git push origin main
+          fi

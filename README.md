@@ -17,6 +17,16 @@ carry [significant undocumented restrictions](#-the-free-tier-is-more-restricted
 > next. See [SPEC.md](SPEC.md) for the design and [the roadmap](SPEC.md#11-roadmap)
 > for progress.
 
+## Releases and updates
+
+Versioned with SemVer, built by GitHub Actions, and installable over the air.
+Cutting a release is one action — push a tag — and the binary, its SHA-256 and
+the manifest devices poll are all generated from it. See
+[RELEASING.md](RELEASING.md).
+
+Published binaries contain **no API keys**; enter your own on the device's
+Settings page.
+
 ## Documentation
 
 | Document | Contents |

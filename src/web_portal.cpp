@@ -11,6 +11,8 @@
 
 #include "assets_pure_css.h"
 #include "network.h"
+#include "ota.h"
+#include "refresh.h"
 
 namespace web {
 namespace {
@@ -310,6 +312,7 @@ void handleDashboard() {
   row("Free heap", buf);
   snprintf(buf, sizeof(buf), "%lu min", (unsigned long)(millis() / 60000));
   row("Uptime", buf);
+  row("Firmware", ota::currentVersion());
   sendChunk("</table></div>");
 
   endPage();
@@ -432,6 +435,22 @@ void handleSettings() {
             "extra API calls)</span></label>");
   sendChunk("</div>");
 
+  // --- Updates ---------------------------------------------------------
+  sendChunk("<div class=\"card\"><h2>Firmware updates</h2>"
+            "<p style=\"font-size:.85rem;color:#aaa\">A JSON manifest "
+            "describing the latest release. Point this at your own fork's "
+            "releases if you have one.</p>");
+  textField("otaurl", "Manifest URL", c.otaManifestUrl,
+            "https://raw.githubusercontent.com/.../manifest.json");
+  sendChunk("<label class=\"pure-checkbox\"><input type=\"checkbox\" "
+            "name=\"otaauto\" value=\"1\"");
+  if (c.otaAutoCheck) sendChunk(" checked");
+  sendChunk("> Check daily <span style=\"color:#777\">(checks only; "
+            "installing always needs a button press)</span></label>");
+  sendChunk("<p style=\"font-size:.8rem;color:#777\">Running ");
+  sendEscaped(ota::currentBuild());
+  sendChunk("</p></div>");
+
   sendChunk("<button type=\"submit\" class=\"pure-button "
             "pure-button-primary\">Save settings</button></form>");
   endPage();
@@ -474,6 +493,13 @@ void handleSettingsPost() {
             sizeof(c.teamDisplayName) - 1);
     c.teamDisplayName[sizeof(c.teamDisplayName) - 1] = '\0';
   }
+  const String otaUrl = g_server.arg("otaurl");
+  if (otaUrl.length() > 0) {
+    strncpy(c.otaManifestUrl, otaUrl.c_str(), sizeof(c.otaManifestUrl) - 1);
+    c.otaManifestUrl[sizeof(c.otaManifestUrl) - 1] = '\0';
+  }
+  c.otaAutoCheck = g_server.hasArg("otaauto");
+
   const String comp = g_server.arg("comp");
   if (comp.length() > 0) {
     strncpy(c.competitionCode, comp.c_str(), sizeof(c.competitionCode) - 1);
@@ -580,6 +606,49 @@ void handleSystem() {
   row("Firmware size", buf);
   sendChunk("</table></div>");
 
+  // --- Firmware ---------------------------------------------------------
+  sendChunk("<div class=\"card\"><h2>Firmware</h2><table>");
+  row("Version", ota::currentVersion());
+  row("Build", ota::currentBuild());
+  const ota::UpdateInfo& up = refresh::updateInfo();
+  if (up.version[0] != '\0') {
+    row("Latest seen", up.version, up.available ? "warn" : "ok");
+  }
+  sendChunk("</table>");
+
+  if (refresh::updateInProgress()) {
+    sendChunk("<p class=\"warn\">An update is in progress. The device will "
+              "restart when it finishes.</p>");
+  } else if (up.available) {
+    sendChunk("<p class=\"warn\">Version ");
+    sendEscaped(up.version);
+    sendChunk(" is available.</p>"
+              "<form method=\"POST\" action=\"/system/update\" "
+              "onsubmit=\"return confirm('Download and install this update? "
+              "The device will restart.')\">"
+              "<button class=\"pure-button pure-button-primary\">"
+              "Install update</button></form>");
+  } else {
+    sendChunk("<form method=\"POST\" action=\"/system/check-update\">"
+              "<button class=\"pure-button\">Check for updates</button>"
+              "</form>");
+  }
+
+  // Upload is offered alongside the pull path because it is the one that
+  // works with no internet — on an isolated network, or if the release host
+  // is unreachable.
+  sendChunk(
+      "<p style=\"font-size:.85rem;color:#aaa;margin-top:1rem\">Or upload a "
+      "<code>firmware.bin</code> built locally. Unlike an update pulled from "
+      "a release, an upload has no manifest to check its hash against — the "
+      "image header is validated, but nothing confirms it is the firmware you "
+      "intended.</p>"
+      "<form method=\"POST\" action=\"/system/ota\" "
+      "enctype=\"multipart/form-data\">"
+      "<input type=\"file\" name=\"firmware\" accept=\".bin\" required>"
+      "<button class=\"pure-button\" style=\"margin-top:.5rem\">"
+      "Upload and install</button></form></div>");
+
   // Both destructive actions confirm in the browser as well as being
   // separate POSTs, so neither can be triggered by following a link — a
   // crawler or a prefetching browser must not be able to wipe the device.
@@ -654,6 +723,58 @@ void begin(store::Settings& settings, const model::Snapshot& data,
       endPage();
       g_pendingAction = Action::ResetWifi;
     });
+    g_server.on("/system/check-update", HTTP_POST, []() {
+      refresh::requestUpdateCheck(/*applyIfFound=*/false);
+      g_server.sendHeader("Location", "/system", true);
+      g_server.send(303, "text/plain", "");
+    });
+    g_server.on("/system/update", HTTP_POST, []() {
+      refresh::requestUpdateCheck(/*applyIfFound=*/true);
+      beginPage("Installing update");
+      sendChunk("<div class=\"card\"><p>Downloading and verifying. The "
+                "device restarts on its own when the image passes its hash "
+                "check, and keeps running the current firmware if it does "
+                "not.</p><p>Progress is on the serial log and the device "
+                "screen.</p></div>");
+      endPage();
+    });
+    // Two handlers: the second receives the body in chunks, the first runs
+    // once it is complete. That is how Arduino's WebServer does uploads.
+    g_server.on(
+        "/system/ota", HTTP_POST,
+        []() {
+          const bool ok = ota::uploadEnd();
+          beginPage(ok ? "Update installed" : "Update failed");
+          if (ok) {
+            sendChunk("<div class=\"card\"><p class=\"ok\">Installed. "
+                      "Restarting.</p></div>");
+          } else {
+            sendChunk("<div class=\"card\"><p class=\"bad\">");
+            sendEscaped(ota::lastError());
+            sendChunk("</p><p>The current firmware is untouched.</p></div>");
+          }
+          endPage();
+          if (ok) {
+            delay(800);  // Let the page reach the browser first.
+            ESP.restart();
+          }
+        },
+        []() {
+          HTTPUpload& upload = g_server.upload();
+          switch (upload.status) {
+            case UPLOAD_FILE_START:
+              ota::uploadBegin(upload.totalSize);
+              break;
+            case UPLOAD_FILE_WRITE:
+              ota::uploadWrite(upload.buf, upload.currentSize);
+              break;
+            case UPLOAD_FILE_ABORTED:
+              ota::uploadAbort();
+              break;
+            default:
+              break;
+          }
+        });
     g_server.on("/system/factory-reset", HTTP_POST, []() {
       beginPage("Factory reset");
       sendChunk("<div class=\"card\"><p>Erasing and restarting.</p></div>");

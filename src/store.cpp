@@ -363,6 +363,7 @@ void loadSettings(Settings& out) {
   loadStr("fdKey", out.footballDataKey, sizeof(out.footballDataKey));
   loadStr("comp", out.competitionCode, sizeof(out.competitionCode));
   loadStr("teamName", out.teamDisplayName, sizeof(out.teamDisplayName));
+  loadStr("otaUrl", out.otaManifestUrl, sizeof(out.otaManifestUrl));
 
   out.apiSportsTeamId    = p.getUShort("apisTeam", out.apiSportsTeamId);
   out.footballDataTeamId = p.getUShort("fdTeam", out.footballDataTeamId);
@@ -372,6 +373,7 @@ void loadSettings(Settings& out) {
   out.soundEnabled       = p.getBool("sound", out.soundEnabled);
   out.screenMask         = p.getUChar("screens", out.screenMask);
   out.includeCups        = p.getBool("cups", out.includeCups);
+  out.otaAutoCheck       = p.getBool("otaAuto", out.otaAutoCheck);
 
   // Calibration is stored as one blob rather than seven keys: it is only ever
   // read and written as a unit, and a partial calibration is meaningless.
@@ -407,6 +409,8 @@ bool saveSettings(const Settings& in) {
   p.putBool("sound", in.soundEnabled);
   p.putUChar("screens", in.screenMask);
   p.putBool("cups", in.includeCups);
+  p.putString("otaUrl", in.otaManifestUrl);
+  p.putBool("otaAuto", in.otaAutoCheck);
   p.putBytes("touchCal", &in.touch, sizeof(in.touch));
   p.end();
 
