@@ -12,6 +12,7 @@
 
 #include "api_client.h"
 #include "crest_cache.h"
+#include "ota.h"
 #include "providers.h"
 
 namespace refresh {
@@ -68,6 +69,26 @@ constexpr uint8_t kTaskCount = sizeof(g_tasks) / sizeof(g_tasks[0]);
 
 /// Whether the schedule has been aligned to the cache's timestamps yet.
 bool g_seededFromCache = false;
+
+// --- Firmware updates -------------------------------------------------------
+volatile bool  g_updateRequested = false;
+volatile bool  g_updateApply     = false;
+volatile bool  g_updateBusy      = false;
+ota::UpdateInfo g_updateInfo;
+uint32_t       g_lastUpdateCheckAt = 0;
+
+/// Automatic checks are daily. Firmware does not appear more often than that,
+/// and a device that phones home constantly is impolite.
+constexpr uint32_t kUpdateCheckIntervalS = 24 * 3600;
+
+/// Show download progress on the panel, since a 1.2 MB download over a weak
+/// signal takes long enough that a frozen-looking screen would worry someone.
+void onUpdateProgress(uint8_t percent) {
+  static uint8_t lastShown = 255;
+  if (percent == lastShown) return;
+  lastShown = percent;
+  if (percent % 10 == 0) Serial.printf("[ota] %u%%\n", percent);
+}
 
 uint32_t g_lastLiveFetchAt = 0;
 uint32_t g_lastGoalSeenAt  = 0;
@@ -309,6 +330,37 @@ void fetchTask(void*) {
       seedScheduleFromCache(now);
     }
 
+    // Firmware updates take priority over data: there is no point spending
+    // requests on a build that is about to be replaced.
+    if (g_updateRequested && g_settings != nullptr) {
+      g_updateRequested = false;
+      g_updateBusy      = true;
+      const bool apply  = g_updateApply;
+      if (ota::checkForUpdate(g_settings->otaManifestUrl, g_updateInfo)) {
+        g_lastUpdateCheckAt = now;
+        if (apply && g_updateInfo.available) {
+          // Reboots on success, so nothing after this runs.
+          ota::applyUpdate(g_updateInfo, onUpdateProgress);
+        }
+      } else {
+        Serial.printf("[ota] check failed: %s\n", ota::lastError());
+        g_lastUpdateCheckAt = now;  // Back off rather than retrying at once.
+      }
+      g_updateBusy = false;
+      vTaskDelay(pdMS_TO_TICKS(500));
+      continue;
+    }
+
+    // Automatic checks report availability but never install. Replacing
+    // firmware someone is relying on is not a decision to make for them.
+    if (g_settings != nullptr && g_settings->otaAutoCheck &&
+        g_settings->otaManifestUrl[0] != '\0' &&
+        (g_lastUpdateCheckAt == 0 ||
+         now - g_lastUpdateCheckAt >= kUpdateCheckIntervalS)) {
+      g_lastUpdateCheckAt = now;
+      ota::checkForUpdate(g_settings->otaManifestUrl, g_updateInfo);
+    }
+
     const bool fetched = runDue(now);
 
     // Crests are synced whether or not anything was fetched. An earlier
@@ -396,5 +448,14 @@ uint32_t secondsToNextFetch() {
 }
 
 bool primed() { return g_primed; }
+
+void requestUpdateCheck(bool applyIfFound) {
+  g_updateApply     = applyIfFound;
+  g_updateRequested = true;
+}
+
+const ota::UpdateInfo& updateInfo() { return g_updateInfo; }
+
+bool updateInProgress() { return g_updateBusy; }
 
 }  // namespace refresh

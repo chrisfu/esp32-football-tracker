@@ -1,55 +1,89 @@
 #!/usr/bin/env python3
-"""Generate include/assets_root_certs.h from the Let's Encrypt root CAs.
+"""Generate include/assets_root_certs.h — the device's trust anchors.
 
-Both providers serve Let's Encrypt certificates chaining to ISRG Root X1, so a
-single trust anchor validates both. Both X1 and X2 are embedded because Let's
-Encrypt issues from either, and a chain that terminates at the one we lack
-would fail for no good reason.
+Certificates are extracted by subject from curl's maintained CA bundle rather
+than fetched individually. Per-root download URLs proved unreliable (one
+returned an entirely different certificate), and one well-known bundle is both
+easier to verify and easier to re-run.
 
-Certificate validation is worth doing here rather than calling setInsecure():
-the API keys travel in request headers, so an active man-in-the-middle could
-capture them. It costs ~2.5 KB of flash.
+Why validate at all, rather than calling setInsecure(): the API keys travel in
+request headers, so an active man-in-the-middle could capture them, and OTA
+downloads firmware the device then executes. Both deserve a real trust chain.
 
     python3 tools/gen_root_certs.py
 """
 
 import pathlib
+import re
+import subprocess
 import urllib.request
 
-ROOTS = [
-    ("ISRG Root X1", "https://letsencrypt.org/certs/isrgrootx1.pem"),
-    ("ISRG Root X2", "https://letsencrypt.org/certs/isrg-root-x2.pem"),
+BUNDLE_URL = "https://curl.se/ca/cacert.pem"
+
+# Subject common names of the roots we need, and what needs each.
+WANTED = [
+    ("ISRG Root X1",
+     "football-data.org, api-sports.io, the crest host, "
+     "objects.githubusercontent.com"),
+    ("ISRG Root X2",
+     "Let's Encrypt issues from either root, so both are required"),
+    ("USERTrust ECC Certification Authority",
+     "github.com, where release downloads start before redirecting"),
 ]
+
 OUT = pathlib.Path(__file__).parent.parent / "include" / "assets_root_certs.h"
 
 
-def fetch(url: str) -> str:
-    pem = urllib.request.urlopen(url, timeout=30).read().decode("ascii")
-    return pem.strip()
+def subject_of(pem: str) -> str:
+    result = subprocess.run(
+        ["openssl", "x509", "-noout", "-subject"],
+        input=pem, capture_output=True, text=True, check=False,
+    )
+    return result.stdout.strip()
 
 
-def as_c_string(pem: str) -> list[str]:
-    return [f'    "{line}\\n"' for line in pem.splitlines()]
+def not_after(pem: str) -> str:
+    result = subprocess.run(
+        ["openssl", "x509", "-noout", "-enddate"],
+        input=pem, capture_output=True, text=True, check=False,
+    )
+    return result.stdout.strip().replace("notAfter=", "")
 
 
 def main() -> None:
+    bundle = urllib.request.urlopen(BUNDLE_URL, timeout=60).read().decode()
+    blocks = re.findall(
+        r"-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----",
+        bundle, re.S,
+    )
+    print(f"{len(blocks)} certificates in {BUNDLE_URL}")
+
+    found = {}
+    for block in blocks:
+        subject = subject_of(block)
+        for cn, _ in WANTED:
+            if f"CN={cn}" in subject or subject.endswith(f"CN = {cn}"):
+                found[cn] = block
+
+    missing = [cn for cn, _ in WANTED if cn not in found]
+    if missing:
+        raise SystemExit(f"roots not found in bundle: {missing}")
+
     lines = [
         "/**",
         " * @file assets_root_certs.h",
-        " * @brief Trust anchors for the API providers. GENERATED - DO NOT EDIT.",
+        " * @brief Trust anchors. GENERATED FILE - DO NOT EDIT.",
         " *",
-        " * Both api.football-data.org and v3.football.api-sports.io serve Let's",
-        " * Encrypt certificates, so these two roots validate both.",
-        " *",
+        f" * Extracted by subject from {BUNDLE_URL}",
         " * Regenerate with: python3 tools/gen_root_certs.py",
         " *",
-        " * NOTE: certificate validation requires a correct clock, because it checks",
-        " * validity dates. Fetches must therefore wait for NTP - see refresh.cpp.",
+        " * NOTE: certificate validation checks validity dates, so it cannot",
+        " * succeed before NTP. Fetches wait for the clock; see refresh.cpp.",
         " *",
-        " * If Let's Encrypt ever retires both of these roots, TLS will start failing",
-        " * and the fix is a firmware update. That is a deliberate choice: failing",
-        " * closed and saying so beats silently accepting any certificate, since the",
-        " * API keys travel in request headers.",
+        " * If every root here is retired, TLS starts failing and the fix is a",
+        " * firmware update. That is deliberate: failing closed and saying so",
+        " * beats accepting any certificate, since the API keys travel in",
+        " * request headers and OTA downloads code the device then runs.",
         " */",
         "",
         "#pragma once",
@@ -58,26 +92,20 @@ def main() -> None:
         "",
     ]
 
-    names = []
-    for i, (name, url) in enumerate(ROOTS):
-        pem = fetch(url)
-        var = f"kRootCa{i}"
-        names.append((name, var))
-        lines.append(f"/// {name}")
-        lines.append(f"const char {var}[] =")
-        lines += as_c_string(pem)
-        lines[-1] = lines[-1] + ";"
-        lines.append("")
-        print(f"{name}: {len(pem)} bytes PEM")
+    for cn, why in WANTED:
+        pem = found[cn].strip()
+        lines.append(f"// {cn}")
+        lines.append(f"//   needed for: {why}")
+        lines.append(f"//   expires: {not_after(pem)}")
+        print(f"  {cn}: expires {not_after(pem)}")
 
-    # A single bundle string is what WiFiClientSecure::setCACert wants; it
-    # accepts multiple concatenated PEM blocks.
-    lines.append("/// Both roots concatenated, for setCACert().")
+    lines.append("")
+    lines.append("/// All roots concatenated, as setCACert() expects.")
     lines.append("const char kRootCaBundle[] =")
-    for i, (_, url) in enumerate(ROOTS):
-        pem = fetch(url)
-        lines += as_c_string(pem)
-    lines[-1] = lines[-1] + ";"
+    for cn, _ in WANTED:
+        for line in found[cn].strip().splitlines():
+            lines.append(f'    "{line}\\n"')
+    lines[-1] += ";"
     lines += ["", "}  // namespace assets", ""]
 
     OUT.write_text("\n".join(lines))

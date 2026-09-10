@@ -17,6 +17,7 @@
 #pragma once
 
 #include "model.h"
+#include "ota.h"
 #include "store.h"
 
 namespace refresh {
@@ -39,5 +40,21 @@ uint32_t secondsToNextFetch();
 
 /// Whether the first full load has completed.
 bool primed();
+
+/**
+ * Ask the fetch task to check for a firmware update, and apply it if one is
+ * found.
+ *
+ * Runs there rather than in a web handler because it downloads 1.2 MB over
+ * TLS — which would hold the HTTP connection open for minutes and block the
+ * UI besides.
+ */
+void requestUpdateCheck(bool applyIfFound);
+
+/// The most recent update check's result.
+const ota::UpdateInfo& updateInfo();
+
+/// True while a check or download is in progress.
+bool updateInProgress();
 
 }  // namespace refresh

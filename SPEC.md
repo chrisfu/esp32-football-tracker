@@ -916,7 +916,10 @@ Each item is one branch, per R1.
 * [ ] Team crests — streaming PNG decode, permanent LittleFS cache (§4.7)
 * [ ] Hardware extras — LDR, RGB LED, speaker
 * [ ] Power optimisation phase, with measurements
-* [ ] OTA updates
+* [x] OTA updates — web upload, and pull from a published release with
+      SHA-256 verification
+* [x] Release automation — SemVer from git tags, GitHub Actions build and
+      release, manifest devices poll (see [RELEASING.md](RELEASING.md))
 
 ## 12. Ideas parked for later
 

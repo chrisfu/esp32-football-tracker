@@ -1,0 +1,64 @@
+name: Build
+
+# Every push and pull request builds the firmware. The point is to catch a
+# broken build before it reaches a tag, since a release that will not compile
+# is discovered at the worst possible moment.
+on:
+  push:
+    branches: [main]
+    # The release workflow commits the manifest back to main. Ignoring that
+    # path stops a release from triggering a pointless rebuild of itself.
+    paths-ignore:
+      - 'firmware/manifest.json'
+      - '**/*.md'
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history and tags: the version is derived from `git describe`,
+          # and a shallow clone would report every build as untagged.
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Cache PlatformIO
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.platformio
+            ~/.cache/pip
+          key: pio-${{ runner.os }}-${{ hashFiles('platformio.ini') }}
+          restore-keys: pio-${{ runner.os }}-
+
+      - name: Install PlatformIO
+        run: pip install --upgrade platformio
+
+      - name: Build
+        # No include/secrets.h in CI, which is deliberate: the header guards on
+        # __has_include so the build succeeds with empty keys. A published
+        # binary must not carry anyone's API keys — users enter their own
+        # through the web interface.
+        run: pio run -e cyd
+
+      - name: Report size
+        run: |
+          echo "### Firmware size" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          pio run -e cyd --target size 2>&1 | grep -E 'RAM:|Flash:' \
+            >> "$GITHUB_STEP_SUMMARY" || true
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware-${{ github.sha }}
+          path: .pio/build/cyd/firmware.bin
+          retention-days: 14
