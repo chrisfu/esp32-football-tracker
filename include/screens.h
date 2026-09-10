@@ -17,6 +17,11 @@ class LiveMatchScreen : public Screen {
   void draw(TFT_eSPI& tft, const model::Snapshot& d) override;
   /// The match clock moves, so this screen asks to be refreshed.
   bool needsRedraw() const override { return true; }
+  /// Scrolls any club name too long for its column.
+  bool animate(TFT_eSPI& tft, const model::Snapshot& d) override;
+
+ private:
+  int16_t namesY_ = 0;
 };
 
 /// Season win/draw/loss record, derived from our row in the league table.

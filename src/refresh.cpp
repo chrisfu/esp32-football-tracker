@@ -263,10 +263,13 @@ bool runDue(uint32_t now) {
         }
       }
     }
-  } else if (g_staging.liveActive) {
+  } else if (g_staging.liveActive && SIMULATE_LIVE_MATCH == 0) {
     // Outside the window with a stale live flag: the match is long over and
     // the provider stopped reporting it. Clear it so the rotation returns to
     // normal even if the final poll was missed.
+    //
+    // Skipped in a simulated build, which would otherwise clear the very
+    // fixture it exists to display.
     g_staging.liveActive = false;
     fetched = true;
   }
