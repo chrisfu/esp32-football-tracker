@@ -21,6 +21,13 @@ const model::Snapshot*  g_data     = nullptr;
 bool g_captive            = false;
 bool g_settingsDirty      = false;
 bool g_credentialsSubmitted = false;
+/// Requested by the System page; performed by the caller, so the web layer
+/// never reboots the device on its own.
+Action g_pendingAction = Action::None;
+
+/// One label/value row in a status table. Declared ahead of use so the pages
+/// defined above the implementation can call it.
+void row(const char* label, const char* value, const char* cls = nullptr);
 
 /**
  * Send a chunk of HTML.
@@ -31,7 +38,16 @@ bool g_credentialsSubmitted = false;
  * failure mode that eventually refuses a TLS handshake, which is far harder to
  * diagnose than a slightly more verbose page builder.
  */
-void sendChunk(const char* html) { g_server.sendContent(html); }
+void sendChunk(const char* html) {
+  // An empty string must never reach sendContent(): in a chunked response a
+  // zero-length chunk is the *terminator*, which is exactly how endPage()
+  // ends the body. Passing "" mid-page therefore truncates the document and
+  // every subsequent write lands on a closed socket ("Connection reset by
+  // peer"). An unset API key rendering as an empty value field was enough to
+  // trigger it.
+  if (html == nullptr || html[0] == '\0') return;
+  g_server.sendContent(html);
+}
 
 /// Escape text for safe interpolation into HTML.
 ///
@@ -52,6 +68,9 @@ void sendEscaped(const char* text) {
     }
   }
   out[o] = '\0';
+  // Same hazard as sendChunk(): an empty escaped result would terminate the
+  // response rather than writing nothing.
+  if (o == 0) return;
   g_server.sendContent(out);
 }
 
@@ -81,9 +100,34 @@ void beginPage(const char* title) {
   sendChunk("</h1>");
 }
 
+/// Navigation, so every page has a route to every other one.
+void nav(const char* current) {
+  struct Item { const char* path; const char* label; };
+  static const Item kItems[] = {
+      {"/", "Status"},
+      {"/settings", "Settings"},
+      {"/cache", "Cache"},
+      {"/system", "System"},
+  };
+  sendChunk("<div style=\"margin:0 0 1rem\">");
+  for (const Item& it : kItems) {
+    const bool here = strcmp(it.path, current) == 0;
+    sendChunk("<a href=\"");
+    sendChunk(it.path);
+    sendChunk("\" style=\"margin-right:.9rem;");
+    sendChunk(here ? "color:#fff;font-weight:600" : "color:#8cf");
+    sendChunk("\">");
+    sendChunk(it.label);
+    sendChunk("</a>");
+  }
+  sendChunk("</div>");
+}
+
 void endPage() {
   sendChunk("</body></html>");
-  g_server.sendContent("");  // Terminates the chunked response.
+  // Deliberately g_server.sendContent rather than sendChunk: the zero-length
+  // chunk is the terminator, and sendChunk now filters exactly that out.
+  g_server.sendContent("");
 }
 
 /// Serve the embedded stylesheet.
@@ -195,7 +239,7 @@ void handleWifiPost() {
 // Dashboard (station mode)
 // ---------------------------------------------------------------------------
 
-void row(const char* label, const char* value, const char* cls = nullptr) {
+void rowImpl(const char* label, const char* value, const char* cls) {
   sendChunk("<tr><th>");
   sendChunk(label);
   sendChunk("</th><td");
@@ -209,8 +253,13 @@ void row(const char* label, const char* value, const char* cls = nullptr) {
   sendChunk("</td></tr>");
 }
 
+void row(const char* label, const char* value, const char* cls) {
+  rowImpl(label, value, cls);
+}
+
 void handleDashboard() {
   beginPage("Football Tracker");
+  nav("/");
 
   const net::Status& st = net::status();
   char buf[64];
@@ -263,10 +312,292 @@ void handleDashboard() {
   row("Uptime", buf);
   sendChunk("</table></div>");
 
-  sendChunk("<div class=\"card\"><h2>Settings</h2>"
-            "<p style=\"font-size:.85rem;color:#aaa\">Team selection, screen "
-            "rotation, dwell time, brightness and cache controls arrive with "
-            "the next stage of work.</p></div>");
+  endPage();
+}
+
+/// Render a text input, with the current value pre-filled.
+void textField(const char* id, const char* label, const char* value,
+               const char* hint = nullptr, bool password = false) {
+  sendChunk("<label for=\"");
+  sendChunk(id);
+  sendChunk("\">");
+  sendChunk(label);
+  if (hint != nullptr) {
+    sendChunk("<span style=\"color:#777\"> — ");
+    sendChunk(hint);
+    sendChunk("</span>");
+  }
+  sendChunk("</label><input id=\"");
+  sendChunk(id);
+  sendChunk("\" name=\"");
+  sendChunk(id);
+  sendChunk(password ? "\" type=\"password\" autocomplete=\"off\" value=\""
+                     : "\" type=\"text\" value=\"");
+  sendEscaped(value);
+  sendChunk("\">");
+}
+
+void handleSettings() {
+  beginPage("Settings");
+  nav("/settings");
+
+  if (g_settings == nullptr) {
+    sendChunk("<p class=\"bad\">not ready</p>");
+    endPage();
+    return;
+  }
+  const store::Settings& c = *g_settings;
+  char buf[24];
+
+  sendChunk("<form class=\"pure-form pure-form-stacked\" method=\"POST\" "
+            "action=\"/settings\">");
+
+  // --- API keys --------------------------------------------------------
+  sendChunk("<div class=\"card\"><h2>API keys</h2>"
+            "<p style=\"font-size:.85rem;color:#aaa\">Stored on the device. "
+            "Leave a field blank to keep the current key.</p>");
+  // Existing keys are never sent back to the browser. There is no legitimate
+  // reason for the page to carry a secret it already holds, and a blank field
+  // meaning "unchanged" gives the same editing experience without it.
+  textField("fdkey", "football-data.org",
+            "", "table, fixtures, scorers", true);
+  textField("apikey", "api-sports.io", "", "live match data", true);
+  sendChunk(
+      "<label class=\"pure-checkbox\" style=\"margin-top:.5rem\">"
+      "<input type=\"checkbox\" onclick=\"var t=this.checked?'text':"
+      "'password';document.getElementById('fdkey').type=t;"
+      "document.getElementById('apikey').type=t\"> Show keys</label>");
+  sendChunk("<p style=\"font-size:.8rem;color:#777\">Currently: ");
+  sendChunk(c.hasFootballDataKey() ? "football-data <span class=\"ok\">set"
+                                     "</span>"
+                                   : "football-data <span class=\"bad\">"
+                                     "missing</span>");
+  sendChunk(c.apiSportsKey[0] != '\0'
+                ? ", api-sports <span class=\"ok\">set</span>"
+                : ", api-sports <span class=\"warn\">missing</span>");
+  sendChunk("</p></div>");
+
+  // --- Team ------------------------------------------------------------
+  sendChunk("<div class=\"card\"><h2>Team</h2>"
+            "<p style=\"font-size:.85rem;color:#aaa\">The two providers use "
+            "different id spaces — football-data 68 is Norwich, not Bolton — "
+            "so both are set separately and deliberately.</p>");
+  textField("teamname", "Display name", c.teamDisplayName,
+            "shown on screen");
+  snprintf(buf, sizeof(buf), "%u", c.footballDataTeamId);
+  textField("fdteam", "football-data team id", buf, "Bolton = 60");
+  snprintf(buf, sizeof(buf), "%u", c.apiSportsTeamId);
+  textField("apiteam", "api-sports team id", buf, "Bolton = 68");
+  textField("comp", "Competition code", c.competitionCode,
+            "Championship = ELC");
+  sendChunk("</div>");
+
+  // --- Screens ---------------------------------------------------------
+  sendChunk("<div class=\"card\"><h2>Screens</h2>");
+  snprintf(buf, sizeof(buf), "%lu", (unsigned long)(c.screenDwellMs / 1000));
+  textField("dwell", "Seconds per screen", buf, "1-120");
+
+  static const char* kScreenNames[] = {"Live match", "Season record",
+                                       "Last result", "Next fixture",
+                                       "League table", "Top scorers"};
+  sendChunk("<p style=\"margin-top:.8rem;color:#aaa;font-size:.85rem\">"
+            "Include in the rotation:</p>");
+  for (uint8_t i = 0; i < 6; ++i) {
+    char id[12];
+    snprintf(id, sizeof(id), "scr%u", i);
+    sendChunk("<label class=\"pure-checkbox\"><input type=\"checkbox\" "
+              "name=\"");
+    sendChunk(id);
+    sendChunk("\" value=\"1\"");
+    if (c.screenMask & (1u << i)) sendChunk(" checked");
+    sendChunk("> ");
+    sendChunk(kScreenNames[i]);
+    sendChunk("</label>");
+  }
+  sendChunk("</div>");
+
+  // --- Display ---------------------------------------------------------
+  sendChunk("<div class=\"card\"><h2>Display &amp; sound</h2>");
+  snprintf(buf, sizeof(buf), "%u", c.brightness);
+  textField("bright", "Brightness %", buf, "10-100");
+  sendChunk("<label class=\"pure-checkbox\"><input type=\"checkbox\" "
+            "name=\"sound\" value=\"1\"");
+  if (c.soundEnabled) sendChunk(" checked");
+  sendChunk("> Goal chime <span style=\"color:#777\">(off by default; a "
+            "device that beeps unbidden gets unplugged)</span></label>");
+  sendChunk("<label class=\"pure-checkbox\"><input type=\"checkbox\" "
+            "name=\"cups\" value=\"1\"");
+  if (c.includeCups) sendChunk(" checked");
+  sendChunk("> Include cup competitions <span style=\"color:#777\">(costs "
+            "extra API calls)</span></label>");
+  sendChunk("</div>");
+
+  sendChunk("<button type=\"submit\" class=\"pure-button "
+            "pure-button-primary\">Save settings</button></form>");
+  endPage();
+}
+
+/// Clamp a submitted number, so a typo cannot make the device unusable.
+uint32_t clampedArg(const char* name, uint32_t lo, uint32_t hi,
+                    uint32_t fallback) {
+  const String raw = g_server.arg(name);
+  if (raw.length() == 0) return fallback;
+  const long v = raw.toInt();
+  if (v < static_cast<long>(lo)) return lo;
+  if (v > static_cast<long>(hi)) return hi;
+  return static_cast<uint32_t>(v);
+}
+
+void handleSettingsPost() {
+  if (g_settings == nullptr) {
+    g_server.send(500, "text/plain", "not ready");
+    return;
+  }
+  store::Settings& c = *g_settings;
+
+  // Keys: a blank field means "unchanged", which is what lets the form omit
+  // the existing secret rather than echoing it back to the browser.
+  const String fdKey = g_server.arg("fdkey");
+  if (fdKey.length() > 0) {
+    strncpy(c.footballDataKey, fdKey.c_str(), sizeof(c.footballDataKey) - 1);
+    c.footballDataKey[sizeof(c.footballDataKey) - 1] = '\0';
+  }
+  const String apiKey = g_server.arg("apikey");
+  if (apiKey.length() > 0) {
+    strncpy(c.apiSportsKey, apiKey.c_str(), sizeof(c.apiSportsKey) - 1);
+    c.apiSportsKey[sizeof(c.apiSportsKey) - 1] = '\0';
+  }
+
+  const String teamName = g_server.arg("teamname");
+  if (teamName.length() > 0) {
+    strncpy(c.teamDisplayName, teamName.c_str(),
+            sizeof(c.teamDisplayName) - 1);
+    c.teamDisplayName[sizeof(c.teamDisplayName) - 1] = '\0';
+  }
+  const String comp = g_server.arg("comp");
+  if (comp.length() > 0) {
+    strncpy(c.competitionCode, comp.c_str(), sizeof(c.competitionCode) - 1);
+    c.competitionCode[sizeof(c.competitionCode) - 1] = '\0';
+  }
+
+  c.footballDataTeamId =
+      static_cast<uint16_t>(clampedArg("fdteam", 1, 65535,
+                                       c.footballDataTeamId));
+  c.apiSportsTeamId =
+      static_cast<uint16_t>(clampedArg("apiteam", 1, 65535,
+                                       c.apiSportsTeamId));
+  c.screenDwellMs = clampedArg("dwell", 1, 120, c.screenDwellMs / 1000) * 1000;
+  c.brightness =
+      static_cast<uint8_t>(clampedArg("bright", 10, 100, c.brightness));
+
+  // Unchecked checkboxes are simply absent from a form POST, so each is read
+  // as present-or-not rather than by value.
+  c.soundEnabled = g_server.hasArg("sound");
+  c.includeCups  = g_server.hasArg("cups");
+
+  uint8_t mask = 0;
+  for (uint8_t i = 0; i < 6; ++i) {
+    char id[12];
+    snprintf(id, sizeof(id), "scr%u", i);
+    if (g_server.hasArg(id)) mask |= (1u << i);
+  }
+  // Every screen unticked would leave a blank device. Treated as "all of
+  // them", which is far more likely to be what was meant than nothing.
+  c.screenMask = (mask == 0) ? 0xFF : mask;
+
+  store::saveSettings(c);
+  g_settingsDirty = true;
+
+  g_server.sendHeader("Location", "/settings", true);
+  g_server.send(303, "text/plain", "");
+  Serial.println(F("[web] settings saved"));
+}
+
+// ---------------------------------------------------------------------------
+// Cache page
+// ---------------------------------------------------------------------------
+
+void handleCache() {
+  beginPage("Cache");
+  nav("/cache");
+  char buf[80];
+
+  sendChunk("<div class=\"card\"><h2>Cached documents</h2><table>");
+  for (uint8_t i = 0; i < static_cast<uint8_t>(store::Doc::Count); ++i) {
+    const store::Doc doc = static_cast<store::Doc>(i);
+    const store::DocStatus ds = store::statusOf(doc);
+    if (!ds.present) {
+      row(store::docName(doc), "absent", "warn");
+      continue;
+    }
+    snprintf(buf, sizeof(buf), "%lu bytes, %s", (unsigned long)ds.size,
+             ds.fresh ? "fresh" : "stale");
+    row(store::docName(doc), buf, ds.fresh ? "ok" : "warn");
+  }
+  uint32_t used = 0, total = 0;
+  store::filesystemUsage(used, total);
+  snprintf(buf, sizeof(buf), "%lu KB of %lu KB", (unsigned long)(used / 1024),
+           (unsigned long)(total / 1024));
+  row("Filesystem", buf);
+  sendChunk("</table></div>");
+
+  sendChunk(
+      "<div class=\"card\"><h2>Actions</h2>"
+      "<p style=\"font-size:.85rem;color:#aaa\">Refreshing spends API "
+      "requests. The daily allowance keeps a reserve of 10 for exactly "
+      "this.</p>"
+      "<form method=\"POST\" action=\"/cache/refresh\" "
+      "style=\"display:inline\">"
+      "<button class=\"pure-button pure-button-primary\">Refresh now"
+      "</button></form> "
+      "<form method=\"POST\" action=\"/cache/clear\" "
+      "style=\"display:inline\" onsubmit=\"return confirm("
+      "'Clear all cached data?')\">"
+      "<button class=\"pure-button\">Clear cache</button></form></div>");
+  endPage();
+}
+
+// ---------------------------------------------------------------------------
+// System page
+// ---------------------------------------------------------------------------
+
+void handleSystem() {
+  beginPage("System");
+  nav("/system");
+
+  const net::Status& st = net::status();
+  char buf[64];
+  sendChunk("<div class=\"card\"><h2>Device</h2><table>");
+  row("Network", st.ssid);
+  row("Address", st.ip);
+  snprintf(buf, sizeof(buf), "%d dBm (%u%%)", st.rssi, st.quality);
+  row("Signal", buf, st.quality >= 40 ? "ok" : "warn");
+  snprintf(buf, sizeof(buf), "%lu KB", (unsigned long)(ESP.getFreeHeap() / 1024));
+  row("Free heap", buf);
+  snprintf(buf, sizeof(buf), "%lu min", (unsigned long)(millis() / 60000));
+  row("Uptime", buf);
+  snprintf(buf, sizeof(buf), "%lu KB", (unsigned long)(ESP.getSketchSize() / 1024));
+  row("Firmware size", buf);
+  sendChunk("</table></div>");
+
+  // Both destructive actions confirm in the browser as well as being
+  // separate POSTs, so neither can be triggered by following a link — a
+  // crawler or a prefetching browser must not be able to wipe the device.
+  sendChunk(
+      "<div class=\"card\"><h2>Reset Wi-Fi</h2>"
+      "<p style=\"font-size:.85rem;color:#aaa\">Clears the stored network "
+      "and restarts into setup mode. Settings and cache are kept.</p>"
+      "<form method=\"POST\" action=\"/system/wifi-reset\" "
+      "onsubmit=\"return confirm('Reset Wi-Fi and restart into setup?')\">"
+      "<button class=\"pure-button\">Reset Wi-Fi</button></form></div>");
+  sendChunk(
+      "<div class=\"card\"><h2 class=\"bad\">Factory reset</h2>"
+      "<p style=\"font-size:.85rem;color:#aaa\">Erases Wi-Fi, API keys, all "
+      "settings and the cache. This cannot be undone.</p>"
+      "<form method=\"POST\" action=\"/system/factory-reset\" "
+      "onsubmit=\"return confirm('Erase everything and restart?')\">"
+      "<button class=\"pure-button\" style=\"background:#802\">"
+      "Factory reset</button></form></div>");
   endPage();
 }
 
@@ -301,6 +632,34 @@ void begin(store::Settings& settings, const model::Snapshot& data,
     g_server.on("/wifi", HTTP_POST, handleWifiPost);
   } else {
     g_server.on("/", HTTP_GET, handleDashboard);
+    g_server.on("/settings", HTTP_GET, handleSettings);
+    g_server.on("/settings", HTTP_POST, handleSettingsPost);
+    g_server.on("/cache", HTTP_GET, handleCache);
+    g_server.on("/cache/clear", HTTP_POST, []() {
+      store::clearAllDocs();
+      g_pendingAction = Action::RefreshNow;  // Refill what was just cleared.
+      g_server.sendHeader("Location", "/cache", true);
+      g_server.send(303, "text/plain", "");
+    });
+    g_server.on("/cache/refresh", HTTP_POST, []() {
+      g_pendingAction = Action::RefreshNow;
+      g_server.sendHeader("Location", "/cache", true);
+      g_server.send(303, "text/plain", "");
+    });
+    g_server.on("/system", HTTP_GET, handleSystem);
+    g_server.on("/system/wifi-reset", HTTP_POST, []() {
+      beginPage("Resetting Wi-Fi");
+      sendChunk("<div class=\"card\"><p>Restarting into setup mode. This "
+                "page will stop responding.</p></div>");
+      endPage();
+      g_pendingAction = Action::ResetWifi;
+    });
+    g_server.on("/system/factory-reset", HTTP_POST, []() {
+      beginPage("Factory reset");
+      sendChunk("<div class=\"card\"><p>Erasing and restarting.</p></div>");
+      endPage();
+      g_pendingAction = Action::FactoryReset;
+    });
   }
   g_server.onNotFound(handleNotFound);
   g_server.begin();
@@ -314,5 +673,11 @@ void tick() { g_server.handleClient(); }
 bool settingsDirty() { return g_settingsDirty; }
 void clearSettingsDirty() { g_settingsDirty = false; }
 bool credentialsSubmitted() { return g_credentialsSubmitted; }
+
+Action takeAction() {
+  const Action a = g_pendingAction;
+  g_pendingAction = Action::None;
+  return a;
+}
 
 }  // namespace web

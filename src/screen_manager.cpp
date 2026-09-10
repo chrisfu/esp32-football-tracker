@@ -45,6 +45,25 @@ void ScreenManager::setPriority(Screen* screen) {
   }
 }
 
+void ScreenManager::setEnabledMask(uint8_t mask) {
+  // Refuse a mask that would leave nothing to show. A blank device is a
+  // support call; ignoring an impossible request is not.
+  if (mask == 0) {
+    Serial.println(F("[screens] refusing an all-disabled mask"));
+    return;
+  }
+  enabledMask_ = mask;
+}
+
+bool ScreenManager::isUsable(uint8_t index) const {
+  if (index >= count_) return false;
+  // The priority screen overrides its own disable bit: a live match matters
+  // more than a preference set before it kicked off.
+  const bool enabled =
+      (enabledMask_ & (1u << index)) != 0 || index == priorityIndex_;
+  return enabled && screens_[index]->hasData(*data_);
+}
+
 uint8_t ScreenManager::nextWithData(uint8_t from, int8_t direction) const {
   if (count_ == 0) return 0;
 
@@ -53,7 +72,7 @@ uint8_t ScreenManager::nextWithData(uint8_t from, int8_t direction) const {
   for (uint8_t step = 1; step <= count_; ++step) {
     const int16_t candidate =
         (static_cast<int16_t>(from) + direction * step + count_ * 2) % count_;
-    if (screens_[candidate]->hasData(*data_)) {
+    if (isUsable(static_cast<uint8_t>(candidate))) {
       return static_cast<uint8_t>(candidate);
     }
   }
@@ -119,7 +138,7 @@ void ScreenManager::drawFooter() {
 
   for (uint8_t i = 0; i < count_; ++i) {
     const int16_t cx = startX + i * kDotSpacing;
-    const bool has = screens_[i]->hasData(*data_);
+    const bool has = isUsable(i);
     if (i == current_) {
       tft_->fillCircle(cx, cy, 4, colour::kAccent);
     } else if (has) {

@@ -33,4 +33,19 @@ void clearSettingsDirty();
 /// reboot into station mode.
 bool credentialsSubmitted();
 
+/// Something the web UI is asking the caller to do.
+///
+/// Returned rather than performed here, so the web layer has no power to
+/// reboot or wipe the device by itself — the same separation the on-device
+/// settings menu uses.
+enum class Action : uint8_t {
+  None,
+  RefreshNow,    ///< Treat all data as stale and re-fetch.
+  ResetWifi,     ///< Clear credentials and restart into setup.
+  FactoryReset,  ///< Erase everything and restart.
+};
+
+/// Take any pending action, clearing it.
+Action takeAction();
+
 }  // namespace web

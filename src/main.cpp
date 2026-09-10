@@ -27,6 +27,7 @@
 
 #include "board_config.h"
 #include "model.h"
+#include "api_client.h"
 #include "network.h"
 #include "providers.h"
 #include "refresh.h"
@@ -312,6 +313,7 @@ void setup() {
   // The live match screen takes priority whenever a match is in progress: the
   // device returns to it after the dwell rather than continuing the carousel.
   g_screens.setPriority(&g_liveMatch);
+  g_screens.setEnabledMask(g_settings.screenMask);
   g_screens.begin(tft, g_data, g_settings.screenDwellMs);
 
   ledSet(false, true, false);  // Green: running.
@@ -403,6 +405,52 @@ void loop() {
     Serial.printf("[main] new data adopted (%u rows, live=%d, heap %lu)\n",
                   g_data.tableRows, g_data.liveActive,
                   (unsigned long)ESP.getFreeHeap());
+    g_screens.refresh();
+  }
+
+  // --- Web UI requests ----------------------------------------------------
+  // Applied here, not in the web layer, so a page handler cannot reboot or
+  // wipe the device on its own — the same separation the settings menu uses.
+  switch (web::takeAction()) {
+    case web::Action::RefreshNow:
+      Serial.println(F("[main] manual refresh requested"));
+      refresh::invalidateAll();
+      break;
+    case web::Action::ResetWifi:
+      Serial.println(F("[main] Wi-Fi reset requested from web UI"));
+      g_settings.wifiSsid[0] = '\0';
+      g_settings.wifiPass[0] = '\0';
+      store::saveSettings(g_settings);
+      ui::drawStatusScreen(tft, "Wi-Fi reset", "restarting into setup...",
+                           ui::colour::kDraw);
+      delay(1200);  // Let the confirmation page reach the browser.
+      ESP.restart();
+      break;
+    case web::Action::FactoryReset:
+      Serial.println(F("[main] factory reset requested from web UI"));
+      store::factoryReset();
+      ui::drawStatusScreen(tft, "Factory reset", "restarting...",
+                           ui::colour::kLoss);
+      delay(1200);
+      ESP.restart();
+      break;
+    case web::Action::None:
+      break;
+  }
+
+  // Settings changed in the browser take effect without a restart wherever
+  // that is possible, which is everything except the Wi-Fi credentials.
+  if (web::settingsDirty()) {
+    web::clearSettingsDirty();
+    Serial.println(F("[main] applying changed settings"));
+    backlightSet(g_settings.brightness);
+    g_screens.setDwell(g_settings.screenDwellMs);
+    g_screens.setEnabledMask(g_settings.screenMask);
+    api::begin(g_settings.apiSportsKey, g_settings.footballDataKey);
+    // A changed team or competition makes the cache wrong rather than merely
+    // stale, so it is discarded rather than left to expire.
+    store::clearAllDocs();
+    refresh::invalidateAll();
     g_screens.refresh();
   }
 
