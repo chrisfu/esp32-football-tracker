@@ -58,6 +58,23 @@ class ScreenManager {
    */
   void setPriority(Screen* screen);
 
+  /**
+   * Enable or disable screens by bitmask, one bit per registration slot.
+   *
+   * A disabled screen is skipped exactly as a screen with no data is, so the
+   * two cases share one code path rather than becoming separate special
+   * cases. The priority screen is honoured even when its bit is clear — a
+   * match in progress matters more than a preference expressed before it
+   * started.
+   */
+  void setEnabledMask(uint8_t mask);
+
+  /// Whether a screen is both enabled and has something to show.
+  bool isUsable(uint8_t index) const;
+
+  /// Change the cycle period without restarting.
+  void setDwell(uint32_t dwellMs) { dwellMs_ = dwellMs; }
+
   /// Drive the rotation and redraws. Call every loop iteration.
   void tick();
 
@@ -99,6 +116,7 @@ class ScreenManager {
   uint8_t  current_  = 0;
   bool     pinned_   = false;
   uint32_t dwellMs_  = 12000;
+  uint8_t  enabledMask_ = 0xFF;
   uint32_t shownAt_  = 0;
   uint32_t lastLiveRedraw_ = 0;
 };

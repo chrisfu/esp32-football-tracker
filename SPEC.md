@@ -704,7 +704,23 @@ visibility into the API budget.
 | **Screens** | Enable/disable and reorder screens; **set the cycle dwell time** (requested); brightness and auto-brightness |
 | **Wi-Fi** | Network scan and credential entry |
 | **Cache** | Inspect each cached document, its age and size; force refresh (spends quota, with a confirmation) or clear |
-| **System** | OTA firmware upload, factory reset, timezone, log |
+| **System** | Device status, guarded Wi-Fi reset, guarded factory reset. OTA to follow |
+
+**API keys are never echoed back to the browser.** The form shows only whether
+each key is set; a blank field means "leave unchanged". There is no legitimate
+reason for the page to carry a secret the device already holds, and blank-means-
+unchanged gives the same editing experience without it.
+
+**Destructive actions are returned to the caller, not performed in the web
+layer** — the same separation the on-device menu uses, so no page handler can
+reboot or wipe the device by itself. Both also confirm in the browser and are
+POST-only, so a crawler or prefetching browser cannot trigger one by following
+a link.
+
+**Settings apply without a restart** wherever possible: brightness, dwell,
+screen selection and API keys all take effect immediately. Changing the team or
+competition *clears* the cache rather than letting it expire, because that data
+is then wrong rather than merely stale.
 
 ### Styling — Pure CSS, embedded gzipped (decision revised)
 
@@ -867,7 +883,8 @@ Each item is one branch, per R1.
       dashboard showing quota and cache state
 * [x] On-device settings menu — long press, device info, how-to-use, guarded
       Wi-Fi and factory resets
-* [ ] Web interface settings pages — team, screens, dwell, brightness, cache
+* [x] Web interface settings pages — **both API keys**, team ids, screens,
+      dwell, brightness, cache controls, guarded resets
 * [x] Provider abstraction + football-data.org client (table, fixtures, scorers)
 * [x] api-sports client — streaming parse, filters, budget enforcement
 * [x] Cache persistence — a reboot costs zero API calls
