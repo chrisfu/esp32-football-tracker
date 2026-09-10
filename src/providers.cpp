@@ -549,6 +549,19 @@ api::Result fetchLiveMatch(model::Snapshot& out) {
     f.weAreHome  = (homeId == ourId);
     f.valid      = true;
 
+    // Crest ids, which cannot simply be copied from this response: the live
+    // feed is api-sports and numbers teams in its own space, while crests are
+    // keyed on football-data ids. Ours is known from settings; the opponent's
+    // is whatever the fixture list recorded when it spotted which upcoming
+    // match had gone live.
+    //
+    // liveOpponentId may still be 0 if the fixture list has not been fetched
+    // yet this session, in which case the opponent's crest simply appears
+    // once it has. Drawing nothing is the correct behaviour for id 0.
+    const uint16_t ourFootballDataId = footballDataTeam();
+    f.homeId = f.weAreHome ? ourFootballDataId : out.liveOpponentId;
+    f.awayId = f.weAreHome ? out.liveOpponentId : ourFootballDataId;
+
     const char* shortStatus = fxo["fixture"]["status"]["short"] | "";
     f.state = (strcmp(shortStatus, "HT") == 0) ? model::MatchState::Paused
                                                : model::MatchState::InPlay;

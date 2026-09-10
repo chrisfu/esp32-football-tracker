@@ -207,6 +207,11 @@ void loadPlaceholder(Snapshot& out) {
     f.matchday   = 7;
     f.weAreHome  = true;
     f.valid      = true;
+    // football-data ids, which is what the crest cache is keyed on — Bolton
+    // and Cardiff. Without these the crests silently do not draw, since id 0
+    // correctly means "no crest".
+    f.homeId     = 60;
+    f.awayId     = 715;
     setField(f.homeForm, "DLLLL");
     setField(f.awayForm, "DDLLD");
 

@@ -102,12 +102,34 @@ int16_t columnTextWidth(int16_t columnX) {
 }
 
 /**
- * Shorten a club name until it fits, measuring rather than guessing.
+ * Truncate text to a pixel width, measuring rather than counting characters.
  *
- * Character counts do not work here: Font 2 is proportional, so "Millwall" and
- * "Wolverhampton" differ by more than their letter count suggests. textWidth()
- * asks the font.
+ * Character counts do not work: the fonts are proportional, so "Millwall" and
+ * "Wolverhampton" differ by more than their letter count suggests — and an
+ * event label like "Thierry Gale (pen miss)" overran its column and crossed
+ * the divider into the other team's events. textWidth() asks the font.
+ *
+ * The cut is marked with two dots; one was mistaken for a clipped glyph.
  */
+void fitToWidth(TFT_eSPI& tft, char* text, size_t textLen, int16_t maxPixels,
+                uint8_t font) {
+  if (tft.textWidth(text, font) <= maxPixels) return;
+
+  size_t len = strlen(text);
+  while (len > 1) {
+    text[--len] = '\0';
+    while (len > 1 && text[len - 1] == ' ') text[--len] = '\0';
+    char probe[64];
+    snprintf(probe, sizeof(probe), "%s..", text);
+    if (tft.textWidth(probe, font) <= maxPixels) {
+      strncpy(text, probe, textLen - 1);
+      text[textLen - 1] = '\0';
+      return;
+    }
+  }
+}
+
+/// Shorten a club name, then truncate whatever remains to fit its column.
 void fitClubName(TFT_eSPI& tft, const char* in, char* out, size_t outLen,
                  int16_t maxPixels, uint8_t font) {
   shortenClubName(in, out, outLen);
@@ -488,11 +510,17 @@ void LiveMatchScreen::draw(TFT_eSPI& tft, const model::Snapshot& d) {
 
     drawEventMarker(tft, e.kind, left + 34, cy);
 
-    char label[32];
+    char label[40];
     snprintf(label, sizeof(label), "%s%s", e.player, eventSuffix(e.kind));
+    // Clipped to what remains of this column, so a long name plus a suffix
+    // cannot spill across the divider into the other team's events.
+    const int16_t labelX = left + 42;
+    const int16_t labelMax = static_cast<int16_t>(
+        (col == 0 ? kDividerX - 3 : board::kScreenWidth - 3) - labelX);
+    fitToWidth(tft, label, sizeof(label), labelMax, 1);
     tft.setTextDatum(ML_DATUM);
     tft.setTextColor(colour::kPrimary, colour::kBackground);
-    tft.drawString(label, left + 42, cy, 1);
+    tft.drawString(label, labelX, cy, 1);
 
     nextRow[col] += kRowHeight;
   }
