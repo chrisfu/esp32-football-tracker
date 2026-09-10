@@ -86,6 +86,21 @@ class Screen {
    */
   virtual bool needsRedraw() const { return false; }
 
+  /**
+   * Update a small animated region, without a full redraw.
+   *
+   * Called far more often than draw() — every loop iteration while the screen
+   * is awake — so an implementation must touch only the pixels it animates.
+   * Used for scrolling a club name too long for its column: a full redraw at
+   * animation rate would be both visible flicker and wasted SPI bandwidth.
+   *
+   * Not called while the backlight is dimmed, for the same reason the
+   * per-second refreshes stop there: nobody is reading it.
+   *
+   * @return true if anything was drawn.
+   */
+  virtual bool animate(TFT_eSPI&, const model::Snapshot&) { return false; }
+
   /// Called when the screen becomes visible, so it can reset view state.
   virtual void onShow(const model::Snapshot&) {}
 };
