@@ -12,6 +12,7 @@
 
 #include "api_client.h"
 #include "crest_cache.h"
+#include "model.h"
 #include "ota.h"
 #include "power.h"
 #include "providers.h"
@@ -247,7 +248,15 @@ bool runDue(uint32_t now) {
 
   // Live first: it is the most time-sensitive thing we do, and during a match
   // it is the only thing that matters.
-  if (inLiveWindow(g_staging, now)) {
+  //
+  // Skipped entirely in a simulated build. Not just to preserve the fake
+  // fixture — though it does that, and the earlier guard further down was not
+  // enough on its own, because the fetch clears liveActive itself — but
+  // because the simulation would otherwise *invite* the fetch: inLiveWindow()
+  // is true precisely when liveActive is set, so a simulated match caused a
+  // real 57 KB request that spent quota and then deleted the thing being
+  // tested.
+  if (SIMULATE_LIVE_MATCH == 0 && inLiveWindow(g_staging, now)) {
     const uint32_t interval = livePollInterval(g_staging, now);
     if (g_lastLiveFetchAt == 0 || now - g_lastLiveFetchAt >= interval) {
       if (api::canAfford(api::Provider::ApiSports)) {
