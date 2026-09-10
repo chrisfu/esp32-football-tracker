@@ -43,8 +43,78 @@ uint16_t resultColour(const model::Fixture& f) {
   return colour::kDraw;
 }
 
+// ---------------------------------------------------------------------------
+// Fixture layout
+// ---------------------------------------------------------------------------
+//
+// Each club gets a column centre, and everything belonging to that club is
+// centred on it: crest, name, form. Previously the crests sat at fixed insets
+// while the names were edge-aligned against the scoreline, so a name's centre
+// moved with its length and could never line up with the crest above it —
+// "Watford" and "Wolverhampton Wanderers" landed in visibly different places.
+
+constexpr int16_t kHomeColumnX = board::kScreenWidth / 4;      // 80
+constexpr int16_t kAwayColumnX = board::kScreenWidth * 3 / 4;  // 240
+/// Space kept clear either side of the centre for the score, so a long name
+/// cannot run into it.
+constexpr int16_t kCentreGuard = 26;
+
 /**
- * Draw both clubs' crests either side of the centre, if they are cached.
+ * Width a club's text may occupy without reaching the scoreline.
+ *
+ * The bound differs by side: the left column's inward limit is
+ * centre − guard, the right column's is centre + guard. Treating both the
+ * same gave the away column 212 px against the home column's 108 — which
+ * would have let away names run twice as wide and reintroduced exactly the
+ * imbalance this layout exists to remove.
+ */
+int16_t columnTextWidth(int16_t columnX) {
+  constexpr int16_t centre = board::kScreenWidth / 2;
+  const bool leftSide = columnX < centre;
+
+  const int16_t innerBound = leftSide ? (centre - kCentreGuard)
+                                      : (centre + kCentreGuard);
+  const int16_t inward  = static_cast<int16_t>(abs(innerBound - columnX));
+  const int16_t outward = leftSide
+                              ? static_cast<int16_t>(columnX - 2)
+                              : static_cast<int16_t>(board::kScreenWidth - 2 -
+                                                     columnX);
+  // The narrower side governs, so the text stays centred on the column.
+  return static_cast<int16_t>(2 * min<int16_t>(inward, outward));
+}
+
+/**
+ * Shorten a club name until it fits, measuring rather than guessing.
+ *
+ * Character counts do not work here: Font 2 is proportional, so "Millwall" and
+ * "Wolverhampton" differ by more than their letter count suggests. textWidth()
+ * asks the font.
+ */
+void fitClubName(TFT_eSPI& tft, const char* in, char* out, size_t outLen,
+                 int16_t maxPixels, uint8_t font) {
+  shortenClubName(in, out, outLen);
+  if (tft.textWidth(out, font) <= maxPixels) return;
+
+  // Trim from the end, leaving a full stop so the truncation is evident
+  // rather than looking like the club's actual name.
+  size_t len = strlen(out);
+  while (len > 1) {
+    out[--len] = '\0';
+    char probe[model::kNameLen];
+    // Built in a separate buffer and copied back: snprintf(out, ..., "%s.",
+    // out) reads and writes the same storage, which is undefined behaviour
+    // even though it usually appears to work.
+    snprintf(probe, sizeof(probe), "%s.", out);
+    if (tft.textWidth(probe, font) <= maxPixels) {
+      strncpy(out, probe, outLen - 1);
+      out[outLen - 1] = '\0';
+      return;
+    }
+  }
+}
+
+/**
+ * Draw both clubs' crests, each centred on its column.
  *
  * @return true if at least one was drawn, so the caller knows whether to
  *         reserve the vertical space. Falling back cleanly matters: a crest
@@ -52,35 +122,35 @@ uint16_t resultColour(const model::Fixture& f) {
  *         screen must not leave a hole waiting for it.
  */
 bool drawFixtureCrests(TFT_eSPI& tft, const model::Fixture& f, int16_t y) {
-  const int16_t inset = 26;
+  constexpr int16_t half = crest::kSize / 2;
   bool any = false;
-  if (crest::draw(tft, f.homeId, inset, y)) any = true;
-  if (crest::draw(tft, f.awayId,
-                  board::kScreenWidth - inset - crest::kSize, y)) {
-    any = true;
-  }
+  if (crest::draw(tft, f.homeId, kHomeColumnX - half, y)) any = true;
+  if (crest::draw(tft, f.awayId, kAwayColumnX - half, y)) any = true;
   return any;
 }
 
-/// Draw "HOME  score  AWAY" with our side highlighted, used by three screens.
-void drawFixtureHeadline(TFT_eSPI& tft, const model::Fixture& f, int16_t y,
-                         const char* centre, uint16_t centreColour) {
+/// Draw both club names, centred on the same columns as their crests.
+void drawFixtureNames(TFT_eSPI& tft, const model::Fixture& f, int16_t y) {
   char home[model::kNameLen], away[model::kNameLen];
-  shortenClubName(f.homeName, home, sizeof(home));
-  shortenClubName(f.awayName, away, sizeof(away));
-
-  tft.setTextDatum(MR_DATUM);
-  tft.setTextColor(f.weAreHome ? colour::kOurTeam : colour::kPrimary,
-                   colour::kBackground);
-  tft.drawString(home, board::kScreenWidth / 2 - 40, y, 2);
-
-  tft.setTextDatum(ML_DATUM);
-  tft.setTextColor(f.weAreHome ? colour::kPrimary : colour::kOurTeam,
-                   colour::kBackground);
-  tft.drawString(away, board::kScreenWidth / 2 + 40, y, 2);
+  fitClubName(tft, f.homeName, home, sizeof(home),
+              columnTextWidth(kHomeColumnX), 2);
+  fitClubName(tft, f.awayName, away, sizeof(away),
+              columnTextWidth(kAwayColumnX), 2);
 
   tft.setTextDatum(MC_DATUM);
-  tft.setTextColor(centreColour, colour::kBackground);
+  tft.setTextColor(f.weAreHome ? colour::kOurTeam : colour::kPrimary,
+                   colour::kBackground);
+  tft.drawString(home, kHomeColumnX, y, 2);
+  tft.setTextColor(f.weAreHome ? colour::kPrimary : colour::kOurTeam,
+                   colour::kBackground);
+  tft.drawString(away, kAwayColumnX, y, 2);
+}
+
+/// Draw the centre element — a scoreline, or "v" for an unplayed fixture.
+void drawFixtureCentre(TFT_eSPI& tft, int16_t y, const char* centre,
+                       uint16_t colourOf) {
+  tft.setTextDatum(MC_DATUM);
+  tft.setTextColor(colourOf, colour::kBackground);
   tft.drawString(centre, board::kScreenWidth / 2, y, 4);
 }
 
@@ -308,13 +378,18 @@ void SeasonRecordScreen::draw(TFT_eSPI& tft, const model::Snapshot& d) {
 void LastResultScreen::draw(TFT_eSPI& tft, const model::Snapshot& d) {
   const model::Fixture& f = d.lastResult;
 
-  // Crests first, with the scoreline beneath them.
+  // Crests on their own row with the score between them, then the names
+  // directly beneath, centred on the same columns.
   const bool crests = drawFixtureCrests(tft, f, kContentTop + 4);
-  const int16_t headlineY = crests ? kContentTop + 62 : kContentTop + 34;
+  const int16_t centreY = crests ? kContentTop + 4 + crest::kSize / 2
+                                 : kContentTop + 20;
+  const int16_t namesY  = crests ? kContentTop + 4 + crest::kSize + 12
+                                 : kContentTop + 44;
 
   char score[8];
   formatScore(f, score, sizeof(score));
-  drawFixtureHeadline(tft, f, headlineY, score, resultColour(f));
+  drawFixtureCentre(tft, centreY, score, resultColour(f));
+  drawFixtureNames(tft, f, namesY);
 
   // Verdict, in the same colour language as the scoreline.
   const int8_t ours   = f.weAreHome ? f.homeGoals : f.awayGoals;
@@ -322,7 +397,7 @@ void LastResultScreen::draw(TFT_eSPI& tft, const model::Snapshot& d) {
   const char* verdict = ours > theirs ? "WON" : (ours < theirs ? "LOST" : "DREW");
   tft.setTextDatum(MC_DATUM);
   tft.setTextColor(resultColour(f), colour::kBackground);
-  tft.drawString(verdict, board::kScreenWidth / 2, headlineY + 34, 4);
+  tft.drawString(verdict, board::kScreenWidth / 2, namesY + 26, 4);
 
   char when[40];
   formatKickoff(f.kickoffUtc, when, sizeof(when));
@@ -344,12 +419,16 @@ void NextFixtureScreen::draw(TFT_eSPI& tft, const model::Snapshot& d) {
   const model::Fixture& f = d.nextFixture;
 
   const bool crests = drawFixtureCrests(tft, f, kContentTop + 2);
-  const int16_t headlineY = crests ? kContentTop + 58 : kContentTop + 22;
-  drawFixtureHeadline(tft, f, headlineY, "v", colour::kMuted);
+  const int16_t centreY = crests ? kContentTop + 2 + crest::kSize / 2
+                                 : kContentTop + 18;
+  const int16_t namesY  = crests ? kContentTop + 2 + crest::kSize + 12
+                                 : kContentTop + 42;
+  drawFixtureCentre(tft, centreY, "v", colour::kMuted);
+  drawFixtureNames(tft, f, namesY);
 
   // Form guides, one under each club, on the same side as its name. Only
   // labelled once, centrally, since two identical captions would be noise.
-  const int16_t formY = headlineY + 26;
+  const int16_t formY = namesY + 22;
   const int16_t leftCx  = board::kScreenWidth / 4;
   const int16_t rightCx = board::kScreenWidth - board::kScreenWidth / 4;
   if (f.homeForm[0] != '\0' || f.awayForm[0] != '\0') {
