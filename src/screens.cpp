@@ -583,8 +583,13 @@ void NextFixtureScreen::draw(TFT_eSPI& tft, const model::Snapshot& d) {
   // Form guides, one under each club, on the same side as its name. Only
   // labelled once, centrally, since two identical captions would be noise.
   const int16_t formY = namesY + 22;
-  const int16_t leftCx  = board::kScreenWidth / 4;
-  const int16_t rightCx = board::kScreenWidth - board::kScreenWidth / 4;
+  // The same column centres as the crests and names, not the quarter points.
+  // These were left at 80/240 when the columns moved to 70/250, so the chips
+  // sat 10 px off each name — and in opposite directions, making 20 px of
+  // mismatch between the two sides. Referencing the shared constants means
+  // they cannot drift apart again.
+  const int16_t leftCx  = kHomeColumnX;
+  const int16_t rightCx = kAwayColumnX;
   if (f.homeForm[0] != '\0' || f.awayForm[0] != '\0') {
     tft.setTextDatum(MC_DATUM);
     tft.setTextColor(colour::kMuted, colour::kBackground);
