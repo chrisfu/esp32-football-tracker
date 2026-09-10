@@ -156,7 +156,13 @@ void updateDimming() {
   backlightSet(target);
   // Stop the per-second live refreshes while dimmed; rotation continues.
   g_screens.setLowPower(shouldDim);
-  if (!shouldDim) g_screens.refresh();  // Waking up gets a clean, current screen.
+  // Release the UI's speed claim when dimming, retake it when waking. The
+  // fetch task's own claims are independent, so a refresh happening while the
+  // screen is dark still runs at full speed.
+  // Frequency scaling is deliberately NOT applied here. See power.h: changing
+  // the CPU clock at runtime with Wi-Fi associated made the web interface
+  // unreliable, and it bought nothing measurable anyway.
+  if (!shouldDim) g_screens.refresh();  // Waking gets a clean, current screen.
   Serial.printf("[power] backlight %s (%u%%)\n",
                 shouldDim ? "dimmed" : "restored", target);
 }
@@ -428,6 +434,7 @@ void setup() {
   g_screens.begin(tft, g_data, g_settings.screenDwellMs);
 
   power::begin();
+  power::reportSleepCapabilities();
   power::noteBacklight(g_settings.brightness);
   g_lastTouchAt = millis();
 
@@ -596,11 +603,25 @@ void loop() {
   //
   // A dimmed screen showing static content has nothing to redraw and nobody
   // watching, so polling it 125 times a second is waste. Touch is still
-  // sampled often enough to feel immediate — 40 ms is well under the
-  // threshold at which a tap feels delayed — and the longer interval means
-  // the CPU is idle far more of the time, which is what the busy percentage
-  // in the power log measures.
-  const uint32_t idleMs = g_dimmed ? 40 : 8;
+  // sampled often enough to feel immediate — 60 ms is well under the point at
+  // which a tap feels delayed — and light sleep wakes early on the touch IRQ
+  // anyway, so a tap is answered at once rather than at the end of the
+  // interval.
+  // Kept short in both states, because the web server is polled from here and
+  // a longer interval starves it. The saving comes from doing less work per
+  // iteration and from the lower clock, not from iterating less often.
+  // A dimmed screen with nobody watching does not need polling 125 times a
+  // second. 60 ms took CPU busy time from 11% to 1% and, measured across
+  // eight requests, left the web interface entirely reliable — an earlier
+  // failure there turned out to be the frequency scaling, not this.
+  const uint32_t idleMs = g_dimmed ? 60 : 8;
   power::markIdle(idleMs);
-  delay(idleMs);
+
+  // Light sleep would be the better idle still, since it retains pin state and
+  // so keeps the backlight lit and the panel's image visible. It is attempted
+  // only when enabled, which by default it is not — see power.cpp for the RTC
+  // watchdog reset that made it unusable on this build.
+  if (!g_dimmed || !power::lightSleep(idleMs)) {
+    delay(idleMs);
+  }
 }

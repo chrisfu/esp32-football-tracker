@@ -13,6 +13,7 @@
 #include "api_client.h"
 #include "crest_cache.h"
 #include "ota.h"
+#include "power.h"
 #include "providers.h"
 
 namespace refresh {
