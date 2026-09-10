@@ -39,7 +39,15 @@ namespace model {
 /// ("Wolverhampton Wanderers FC" is 26 characters, hence 28).
 constexpr uint8_t kTlaLen  = 4;   ///< "BOL" + terminator.
 constexpr uint8_t kNameLen = 28;
-constexpr uint8_t kCompLen = 20;
+/**
+ * Competition name.
+ *
+ * 32, not 20. "UEFA Champions League" is 21 characters and was being stored as
+ * "UEFA Champions Leag" — invisible while tracking a Championship club, and
+ * immediate for anyone in Europe. "UEFA Europa Conference League" is 29, which
+ * sets the bound.
+ */
+constexpr uint8_t kCompLen = 32;
 
 /// One row of the league table. Mirrors the columns the brief asks for.
 struct TableRow {

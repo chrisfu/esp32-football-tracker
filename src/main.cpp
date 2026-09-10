@@ -430,7 +430,7 @@ void setup() {
   // certificate validation needs one, so there is nothing to sequence here.
   refresh::begin(g_settings, g_data);
 
-  g_menu.begin(g_settings);
+  g_menu.begin(g_settings, g_data);
   // The live match screen takes priority whenever a match is in progress: the
   // device returns to it after the dwell rather than continuing the carousel.
   g_screens.setPriority(&g_liveMatch);

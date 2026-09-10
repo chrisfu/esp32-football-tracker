@@ -20,6 +20,7 @@
 
 #include <TFT_eSPI.h>
 
+#include "model.h"
 #include "store.h"
 #include "touch_input.h"
 
@@ -34,7 +35,19 @@ class SettingsMenu {
     FactoryReset,  ///< Erase everything and reboot.
   };
 
-  void begin(const store::Settings& settings) { settings_ = &settings; }
+  /**
+   * @param data used to name the tracked club.
+   *
+   * The club's name comes from the fetched standings, not from a stored
+   * setting. A separately stored name is a third place that says which team
+   * this is, and it drifted exactly as you would expect: configuring a new
+   * club by id left the old name in place, so Device info reported the
+   * previous team indefinitely.
+   */
+  void begin(const store::Settings& settings, const model::Snapshot& data) {
+    settings_ = &settings;
+    data_     = &data;
+  }
 
   /// Open at the root page and draw it.
   void open(TFT_eSPI& tft);
@@ -82,6 +95,8 @@ class SettingsMenu {
   void show(TFT_eSPI& tft, Page page);
   void drawRoot(TFT_eSPI& tft);
   void drawDeviceInfo(TFT_eSPI& tft);
+  /// Tracked club's name, preferring the fetched data over any stored name.
+  const char* teamLabel() const;
   void drawHowToUse(TFT_eSPI& tft);
   void drawConfirm(TFT_eSPI& tft, const char* heading, const char* detail);
   void drawTitle(TFT_eSPI& tft, const char* title);
@@ -89,7 +104,8 @@ class SettingsMenu {
   /// Index of the button containing y, or -1.
   int8_t buttonAt(int16_t y) const;
 
-  const store::Settings* settings_ = nullptr;
+  const store::Settings*  settings_ = nullptr;
+  const model::Snapshot*  data_     = nullptr;
   Page    page_    = Page::Closed;
   Action  action_  = Action::None;
 

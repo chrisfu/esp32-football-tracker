@@ -628,6 +628,23 @@ All of the above is confirmed against the live account, not assumed:
 | `/competitions/ELC/scorers?limit=3` | ✅ works — 2.2 KB |
 | Rate headers | `x-requests-available-minute`, `X-RequestCounter-Reset` (60 s) |
 
+### Identify the tracked club by id, never by name
+
+Both providers are asked about our team by **id**, and the club is recognised
+in their responses by **id**. Never by name.
+
+An earlier version matched with `strstr(apiClubName, storedDisplayName)`, which
+worked by luck: "Bolton Wanderers" is a literal substring of "Bolton Wanderers
+FC". Configure a different club and it fails silently in two places at once —
+the standings row is never flagged, so the Season screen reports no data and
+vanishes from the rotation, and the scorers filter matches nobody, so the
+screen falls back to the league chart as though that were the design.
+
+Neither failure looks like a lookup problem, which is what made it worth
+recording. A club's display name is also stored, but only as a label of last
+resort before the first fetch: the real name comes from the standings, so the
+two cannot disagree.
+
 ### 🚩 The two providers use different team id spaces
 
 **Bolton Wanderers is `68` on api-sports and `60` on football-data.org.**

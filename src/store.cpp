@@ -72,6 +72,33 @@ struct MetaEntry {
   uint32_t ttl       = 0;
 };
 
+/// Identifies the metadata file, so a foreign or corrupt file is not read as
+/// timestamps.
+constexpr uint32_t kMetaMagic = 0x46425431;  // "FBT1"
+
+/**
+ * Cache schema version. **Bump this whenever a stored document's shape
+ * changes** — which means whenever a deserialisation filter gains or loses a
+ * field.
+ *
+ * Cached documents are filtered down to the fields the screens use, so a
+ * filter change makes every existing document subtly wrong rather than
+ * unreadable: it parses, and the new field is simply absent. That has now
+ * happened twice — team ids added to the standings, then to the scorers — and
+ * both times the symptom was a screen quietly showing nothing while a
+ * perfectly valid-looking cache sat on disk until its TTL expired.
+ *
+ * Version 2: team ids retained in the standings and scorers documents.
+ */
+constexpr uint16_t kCacheSchemaVersion = 2;
+
+/// Header written ahead of the entries.
+struct MetaHeader {
+  uint32_t magic;
+  uint16_t version;
+  uint16_t entryCount;
+};
+
 /// In-RAM mirror of the metadata file. Cheap (40 bytes) and it means a
 /// freshness check costs no filesystem access at all — which matters because
 /// the screen rotation checks freshness far more often than data is fetched.
@@ -107,19 +134,43 @@ uint32_t nowOrZero() {
   return t > 1600000000L ? static_cast<uint32_t>(t) : 0;
 }
 
+/// Set when the stored cache was written by a different schema, so begin()
+/// knows to discard the documents as well as the metadata.
+bool g_schemaMismatch = false;
+
 void loadMeta() {
   for (auto& e : g_meta) e = MetaEntry{};
+  g_schemaMismatch = false;
+
   uint32_t metaSize = 0;
   if (!statQuietly(kMetaPath, metaSize)) return;  // Never written yet.
 
   File f = LittleFS.open(kMetaPath, "r");
   if (!f) return;
-  // A short or oversized file means a partial write from an older format;
-  // discard it rather than trusting half of it. Losing freshness metadata only
-  // costs one refresh, so failing safe is cheap here.
-  if (f.size() == sizeof(g_meta)) {
-    f.read(reinterpret_cast<uint8_t*>(g_meta), sizeof(g_meta));
+
+  MetaHeader header{};
+  const bool sizeOk = (f.size() == sizeof(MetaHeader) + sizeof(g_meta));
+  if (sizeOk) f.read(reinterpret_cast<uint8_t*>(&header), sizeof(header));
+
+  // A short or oversized file means a partial write or an older format;
+  // discard it rather than trusting half of it. Losing freshness metadata
+  // costs one refresh, so failing safe is cheap.
+  if (!sizeOk || header.magic != kMetaMagic ||
+      header.entryCount != static_cast<uint16_t>(Doc::Count)) {
+    Serial.println(F("[store] cache metadata unrecognised; discarding cache"));
+    g_schemaMismatch = true;
+    f.close();
+    return;
   }
+  if (header.version != kCacheSchemaVersion) {
+    Serial.printf("[store] cache schema %u, expected %u; discarding cache\n",
+                  header.version, kCacheSchemaVersion);
+    g_schemaMismatch = true;
+    f.close();
+    return;
+  }
+
+  f.read(reinterpret_cast<uint8_t*>(g_meta), sizeof(g_meta));
   f.close();
 }
 
@@ -130,11 +181,15 @@ bool saveMeta() {
   const char* tmp = "/cache/meta.tmp";
   File f = LittleFS.open(tmp, "w");
   if (!f) return false;
-  const size_t written =
-      f.write(reinterpret_cast<const uint8_t*>(g_meta), sizeof(g_meta));
+
+  const MetaHeader header{kMetaMagic, kCacheSchemaVersion,
+                          static_cast<uint16_t>(Doc::Count)};
+  size_t written =
+      f.write(reinterpret_cast<const uint8_t*>(&header), sizeof(header));
+  written += f.write(reinterpret_cast<const uint8_t*>(g_meta), sizeof(g_meta));
   f.flush();
   f.close();
-  if (written != sizeof(g_meta)) {
+  if (written != sizeof(header) + sizeof(g_meta)) {
     LittleFS.remove(tmp);
     return false;
   }
@@ -163,6 +218,15 @@ bool begin() {
   if (!statQuietly(kCacheDir, ignored)) LittleFS.mkdir(kCacheDir);
   loadMeta();
   g_ready = true;
+
+  // Documents written under a different schema are discarded here rather than
+  // left to expire. They would parse perfectly and simply lack whatever field
+  // the new filter added, which is a far more confusing failure than an empty
+  // cache: a screen shows nothing while the cache page reports it fresh.
+  if (g_schemaMismatch) {
+    clearAllDocs();
+    g_schemaMismatch = false;
+  }
 
   uint32_t used = 0, total = 0;
   filesystemUsage(used, total);

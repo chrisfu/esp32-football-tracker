@@ -145,7 +145,16 @@ struct Settings {
   char     competitionCode[kCodeLen] = "ELC";
 
   /// Display name, because the API returns Bolton as plain "Bolton".
-  char teamDisplayName[24] = "Bolton Wanderers";
+  /**
+   * Fallback name for the tracked club.
+   *
+   * Empty by default, deliberately. It used to default to a specific club,
+   * which meant any device configured for a different team by id carried a
+   * name that contradicted it — and nothing ever corrected the contradiction.
+   * The club's real name comes from the standings; this is consulted only
+   * before the first fetch has completed.
+   */
+  char teamDisplayName[24] = {0};
 
   uint32_t screenDwellMs = 12000;
   uint8_t  brightness    = 100;  ///< Percent.
