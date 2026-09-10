@@ -75,6 +75,20 @@ class ScreenManager {
   /// Change the cycle period without restarting.
   void setDwell(uint32_t dwellMs) { dwellMs_ = dwellMs; }
 
+  /**
+   * Suppress the per-second refreshes that live content asks for.
+   *
+   * Set while the backlight is dimmed. Rotation continues — a dimmed screen is
+   * still glanceable, and moving between screens is what the device is for —
+   * but a countdown ticking once a second on a panel at 15% brightness is
+   * redraw nobody can read. Instrumentation put this at ~17 redraws a minute
+   * while idle, each one a full-width SPI push.
+   *
+   * The next rotation or touch redraws in full, so nothing goes stale beyond
+   * the moment it is looked at.
+   */
+  void setLowPower(bool lowPower) { lowPower_ = lowPower; }
+
   /// Drive the rotation and redraws. Call every loop iteration.
   void tick();
 
@@ -117,6 +131,7 @@ class ScreenManager {
   bool     pinned_   = false;
   uint32_t dwellMs_  = 12000;
   uint8_t  enabledMask_ = 0xFF;
+  bool     lowPower_    = false;
   uint32_t shownAt_  = 0;
   uint32_t lastLiveRedraw_ = 0;
 };

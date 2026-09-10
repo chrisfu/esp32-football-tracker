@@ -809,29 +809,73 @@ Beyond the display and touch, the board's extras all earn a job:
 
 ## 9. Power optimisation (Rule R5)
 
-Scheduled as a **deliberate phase after the feature set is stable**, so we
-measure rather than guess. Planned measures, cheapest-first:
+### Measured on-device, because a meter would not fit
 
-1. **Backlight PWM** — the backlight dominates power draw. Dim on inactivity,
-   and cap brightness via the LDR.
-2. **Wi-Fi modem sleep** between fetches; disconnect entirely when the next
-   refresh is far away. The radio is the second-largest consumer.
-3. **CPU frequency scaling** — drop to 80 MHz when idle; 240 MHz is only needed
-   while parsing JSON.
-4. **Light sleep between screen updates.** A static screen needs no CPU at all.
-5. **Deep sleep with the image retained.** The ILI9341 holds its own frame in
-   GRAM, so the ESP32 can deep-sleep while the panel keeps displaying the last
-   rendered screen with the backlight still lit. A "next match" countdown
-   screen can therefore sit on ~nothing overnight, waking on the touch IRQ or a
-   timer. This is the biggest available win and is unique to having the panel's
-   own memory.
-6. **Configurable quiet hours** — long deep sleep overnight, which also saves
-   API calls.
+An inline USB meter is the obvious instrument, but this board's socket is
+micro-USB and the available meter is USB-C, so absolute figures are
+unavailable. That matters less than it sounds: what validates an optimisation
+is the *relative* change, and the chip can measure the things that determine
+its own consumption.
 
-Measurement: log `esp_timer` wake durations and instrument with an inline USB
-power meter before and after each change, recorded in this document.
+Three quantities dominate, in order: **backlight duty**, **radio time**, and
+**CPU busy fraction**. All three are tracked, and combined into a relative cost
+index with stated weights (`src/power.cpp`). **The index is not milliamps** and
+the code says so — only comparisons between two runs of this firmware mean
+anything, which is exactly what is needed to show whether a change helped.
+The weights are named constants so anyone who does get a meter onto this board
+can correct them from measurements.
 
----
+### Results
+
+| | Active | Dimmed | Change |
+|---|---|---|---|
+| CPU busy | 11% | **2%** | −82% |
+| Backlight duty | 100% | **15%** | −85% |
+| Redraws/min | 17 | **5** | −71% |
+| Cost index | ~8,200 | **~950** at steady state | ~8× |
+
+### What produced them
+
+1. **Inactivity dimming** after two minutes, to 15% rather than off. The
+   backlight is the largest single consumer, and this is the cheapest real
+   saving available. Not off, because a display you glance at should stay
+   readable — and a dark-but-visible panel draws a fraction of a bright one.
+   The configured brightness acts as a ceiling, so dimming never brightens.
+2. **A longer idle interval while dimmed** — 40 ms instead of 8 ms. A static,
+   dimmed screen with nobody watching does not need polling 125 times a
+   second. 40 ms is still well under the point where a tap feels delayed.
+   This is what took CPU busy from 11% to 2%.
+3. **Suppressed live redraws while dimmed.** This one was *found by the
+   instrumentation*: the figures showed ~17 redraws a minute while idle, which
+   is a countdown ticking once a second onto a panel at 15% brightness that
+   nobody can read. Rotation continues, since a dimmed screen is still
+   glanceable, but the per-second refreshes stop — 17/min down to 5/min, which
+   is the rotation alone.
+
+That third item is the argument for instrumenting before optimising. It was
+invisible without measurement, cost nothing to fix, and no amount of reasoning
+about the design would have surfaced it.
+
+### Still available, not yet done
+
+* **Wi-Fi modem sleep** is already enabled (`WiFi.setSleep(true)`), but the
+  radio could be disconnected entirely between refreshes when the next one is
+  hours away.
+* **CPU frequency scaling** — 240 MHz is only needed while parsing JSON.
+* **Light sleep between screen updates**, waking on the touch IRQ.
+* **Deep sleep with the image retained.** The ILI9341 holds its own frame in
+  GRAM, so the ESP32 can sleep while the panel keeps displaying the last
+  screen with the backlight lit. A "next match" countdown could therefore sit
+  on almost nothing overnight. This remains the biggest available win and is
+  unique to the panel having its own memory.
+* **Configurable quiet hours**, which would also save API calls.
+
+### LDR auto-brightness: dropped
+
+The ambient light sensor reads a flat zero on this unit (see
+[docs/HARDWARE.md](docs/HARDWARE.md)), so automatic brightness is not
+available. Inactivity dimming — the measure that actually matters — is
+unaffected, since it depends on touch rather than light.
 
 ## 10. Data layout
 

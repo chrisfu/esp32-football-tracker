@@ -56,14 +56,36 @@ struct Task {
   uint32_t    intervalS;
   uint32_t    lastOkAt;   ///< Unix seconds; 0 means never.
   api::Result (*run)(model::Snapshot&);
+  /**
+   * The cached document whose timestamp seeds this task's schedule.
+   *
+   * Held here rather than in a parallel array, which is how this went wrong
+   * before: a `Doc[kTaskCount]` with one initialiser too few zero-filled its
+   * last element to `Doc::Standings`, so the opponent-form task inherited the
+   * standings document's freshness and was considered permanently up to date.
+   * It therefore never ran, and the opponent's form never appeared.
+   *
+   * `Doc::Count` means "this task caches nothing", which is the honest state
+   * for a task whose result is folded into another document.
+   */
+  store::Doc  cacheDoc;
 };
 
 Task g_tasks[] = {
-    {"standings", kStandingsIntervalS, 0, providers::fetchStandings},
-    {"matches",   kMatchesIntervalS,   0, providers::fetchOurMatches},
-    {"fixture",   kFixtureIntervalS,   0, providers::fetchNextFixture},
-    {"scorers",   kScorersIntervalS,   0, providers::fetchScorers},
-    {"oppform",   kMatchesIntervalS,   0, providers::fetchOpponentForm},
+    {"standings", kStandingsIntervalS, 0, providers::fetchStandings,
+     store::Doc::Standings},
+    {"matches",   kMatchesIntervalS,   0, providers::fetchOurMatches,
+     store::Doc::TeamMatches},
+    {"fixture",   kFixtureIntervalS,   0, providers::fetchNextFixture,
+     store::Doc::OpponentMatches},
+    {"scorers",   kScorersIntervalS,   0, providers::fetchScorers,
+     store::Doc::Scorers},
+    // The opponent's form is written into the next fixture rather than stored
+    // as its own document, so there is no cached timestamp to seed from. It
+    // runs once after every boot, which is cheap and keeps the form correct
+    // even though it is not itself persisted.
+    {"oppform",   kMatchesIntervalS,   0, providers::fetchOpponentForm,
+     store::Doc::Count},
 };
 constexpr uint8_t kTaskCount = sizeof(g_tasks) / sizeof(g_tasks[0]);
 
@@ -284,12 +306,10 @@ bool runDue(uint32_t now) {
  * from begin().
  */
 void seedScheduleFromCache(uint32_t now) {
-  static const store::Doc kDocs[kTaskCount] = {
-      store::Doc::Standings, store::Doc::TeamMatches,
-      store::Doc::OpponentMatches, store::Doc::Scorers};
-
   for (uint8_t i = 0; i < kTaskCount; ++i) {
-    const store::DocStatus st = store::statusOf(kDocs[i]);
+    // A task with no cached document has nothing to seed from and should run.
+    if (g_tasks[i].cacheDoc == store::Doc::Count) continue;
+    const store::DocStatus st = store::statusOf(g_tasks[i].cacheDoc);
     if (!st.present || st.fetchedAt == 0) continue;
     // Guard against a timestamp from the future, which would otherwise defer
     // a fetch indefinitely — possible if the clock was wrong when it was

@@ -30,6 +30,7 @@
 #include "api_client.h"
 #include "network.h"
 #include "ota.h"
+#include "power.h"
 #include "providers.h"
 #include "refresh.h"
 #include "screen.h"
@@ -119,9 +120,45 @@ void backlightBegin() {
 }
 
 void backlightSet(uint8_t percent) {
+  const uint8_t clamped = min<uint8_t>(percent, 100);
   ledcWrite(board::kBacklightChannel,
-            (static_cast<uint32_t>(min<uint8_t>(percent, 100)) *
-             board::kBacklightMaxDuty) / 100);
+            (static_cast<uint32_t>(clamped) * board::kBacklightMaxDuty) / 100);
+  power::noteBacklight(clamped);
+}
+
+// --- Inactivity dimming -----------------------------------------------------
+//
+// The backlight is the largest single consumer, so dimming it when nobody is
+// looking is the cheapest real saving available — and unlike deep sleep it
+// costs nothing in responsiveness, because the panel keeps its image and a
+// touch restores full brightness instantly.
+
+/// Dim after this long without a touch.
+constexpr uint32_t kDimAfterMs = 120000;
+/// Duty while dimmed. Not zero: the screen stays readable, which is the whole
+/// point of a display you glance at, and a dark-but-visible panel draws a
+/// fraction of a bright one.
+constexpr uint8_t kDimmedPercent = 15;
+
+uint32_t g_lastTouchAt = 0;
+bool     g_dimmed      = false;
+
+/// Apply or lift dimming based on how long since the last touch.
+void updateDimming() {
+  const bool shouldDim = (millis() - g_lastTouchAt) > kDimAfterMs;
+  if (shouldDim == g_dimmed) return;
+  g_dimmed = shouldDim;
+
+  // Never dim brighter than the configured level: the setting is a ceiling.
+  const uint8_t target =
+      shouldDim ? min<uint8_t>(kDimmedPercent, g_settings.brightness)
+                : g_settings.brightness;
+  backlightSet(target);
+  // Stop the per-second live refreshes while dimmed; rotation continues.
+  g_screens.setLowPower(shouldDim);
+  if (!shouldDim) g_screens.refresh();  // Waking up gets a clean, current screen.
+  Serial.printf("[power] backlight %s (%u%%)\n",
+                shouldDim ? "dimmed" : "restored", target);
 }
 
 // The RGB LED is active LOW; these wrappers exist so no caller must remember.
@@ -390,6 +427,10 @@ void setup() {
   g_screens.setEnabledMask(g_settings.screenMask);
   g_screens.begin(tft, g_data, g_settings.screenDwellMs);
 
+  power::begin();
+  power::noteBacklight(g_settings.brightness);
+  g_lastTouchAt = millis();
+
   ledSet(false, true, false);  // Green: running.
   Serial.println();
   Serial.println(F("Running. Swipe left/right to change screen,"));
@@ -398,6 +439,8 @@ void setup() {
 }
 
 void loop() {
+  const uint32_t loopStart = millis();
+
   // Networking and the web server are pumped in both modes.
   net::tick();
   web::tick();
@@ -421,6 +464,12 @@ void loop() {
   if (gesture != touch::Gesture::None) {
     Serial.printf("gesture: %s%s\n", touch::gestureName(gesture),
                   g_screens.isPinned() ? "  [held]" : "");
+  }
+  // Any touch at all counts as activity, including one that decodes to no
+  // gesture — someone prodding the screen wants the light on, whether or not
+  // the prod resolved into anything.
+  if (gesture != touch::Gesture::None || touchInput.isPressed()) {
+    g_lastTouchAt = millis();
   }
 
   // --- Settings menu ------------------------------------------------------
@@ -476,6 +525,7 @@ void loop() {
   // Adopt any completed fetch between frames, which is the one moment nothing
   // is mid-draw. See refresh.h for why this needs no lock.
   if (refresh::adopt(g_data)) {
+    power::noteFetch();
     Serial.printf("[main] new data adopted (%u rows, live=%d, heap %lu)\n",
                   g_data.tableRows, g_data.liveActive,
                   (unsigned long)ESP.getFreeHeap());
@@ -531,8 +581,26 @@ void loop() {
   g_screens.handleGesture(gesture);
   g_screens.tick();
 
-  // 8 ms keeps gesture decoding responsive without spinning the CPU. The power
-  // phase replaces this with a light-sleep wait on the touch IRQ, since a
-  // static screen needs no polling at all.
-  delay(8);
+  // --- Power ---------------------------------------------------------------
+  updateDimming();
+  power::markBusy(millis() - loopStart);
+  power::tick();
+
+  static uint32_t lastPowerLog = 0;
+  if (millis() - lastPowerLog > 60000) {
+    lastPowerLog = millis();
+    power::logSummary();
+  }
+
+  // Idle interval, chosen by what the screen is actually doing.
+  //
+  // A dimmed screen showing static content has nothing to redraw and nobody
+  // watching, so polling it 125 times a second is waste. Touch is still
+  // sampled often enough to feel immediate — 40 ms is well under the
+  // threshold at which a tap feels delayed — and the longer interval means
+  // the CPU is idle far more of the time, which is what the busy percentage
+  // in the power log measures.
+  const uint32_t idleMs = g_dimmed ? 40 : 8;
+  power::markIdle(idleMs);
+  delay(idleMs);
 }
