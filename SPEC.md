@@ -829,10 +829,14 @@ can correct them from measurements.
 
 | | Active | Dimmed | Change |
 |---|---|---|---|
-| CPU busy | 11% | **2%** | −82% |
+| CPU busy | 11% | **1%** | −91% |
 | Backlight duty | 100% | **15%** | −85% |
 | Redraws/min | 17 | **5** | −71% |
 | Cost index | ~8,200 | **~950** at steady state | ~8× |
+| Web requests while dimmed | — | **12/12** | no regression |
+
+The last row matters as much as the others: two of the optimisations tried
+broke the web interface, and only measuring it caught them.
 
 ### What produced them
 
@@ -856,19 +860,76 @@ That third item is the argument for instrumenting before optimising. It was
 invisible without measurement, cost nothing to fix, and no amount of reasoning
 about the design would have surfaced it.
 
+### Three optimisations tried and rejected
+
+All three were in the original plan. Each was implemented, measured, and
+removed. The measurements are the useful output — without them, all three
+would still look like good ideas.
+
+**1. Deep sleep with the image still visible — impossible on this board.**
+
+The spec claimed the ILI9341's own GRAM would keep the screen readable while
+the ESP32 deep-slept, making an overnight countdown nearly free. The GRAM part
+is true; the *visible* part is not. Keeping the backlight lit through deep
+sleep requires holding GPIO21 high, and only RTC-capable pins can be held.
+Asked directly on the hardware:
+
+```
+Backlight GPIO21 RTC-capable : NO
+Touch IRQ GPIO36 RTC-capable : yes
+ext0 wake on touch IRQ       : accepted
+```
+
+So deep sleep means a dark screen. Wake-on-touch does work, which makes deep
+sleep viable for a genuinely-off state such as quiet hours — but not for the
+always-visible display this was supposed to enable. A capability probe now runs
+at boot and reports this, so the assumption cannot quietly return.
+
+**2. Light sleep — resets the device on this build.**
+
+Light sleep *does* retain pin state, so it was the right mechanism for an
+idle-but-visible screen. Enabling it reset the device the instant it dimmed:
+
+```
+rst:0x10 (RTCWDT_RTC_RESET)
+```
+
+The RTC watchdog firing during the sleep transition, because
+**CONFIG_PM_ENABLE is unset** in the prebuilt Arduino libraries — there is no
+power-management layer to coordinate `esp_light_sleep_start()` with the Wi-Fi
+driver. Isolated rather than assumed: with light sleep off and frequency
+scaling on, the device ran indefinitely. The code is kept, off by default,
+because it is correct and would work on a custom IDF build with PM enabled.
+
+**3. CPU frequency scaling — breaks Wi-Fi, and buys nothing anyway.**
+
+Scaling to 160 MHz while idle left **one of eight** web requests completing;
+at 80 MHz results were erratic. Changing the CPU clock changes the APB clock,
+which the Wi-Fi and lwIP timers depend on, and nothing in this build reconciles
+them — the same missing PM layer.
+
+It also achieved less than expected. Scaling does not reduce the *busy
+percentage*: the same work simply takes longer, measured at 11% busy at both
+80 MHz and 240 MHz. It only reduces power during that time.
+
+**And it was nearly attributed to the wrong cause.** The first failure appeared
+when scaling and a longer idle interval were introduced together, and the
+interval looked the more likely culprit — a synchronous web server starved of
+polling is a plausible story. Testing the interval *alone* gave 8 of 8 requests
+succeeding at 1% busy. The interval was innocent; the scaling was not. Two
+changes, one symptom, and the obvious explanation was the wrong one.
+
 ### Still available, not yet done
 
-* **Wi-Fi modem sleep** is already enabled (`WiFi.setSleep(true)`), but the
-  radio could be disconnected entirely between refreshes when the next one is
-  hours away.
-* **CPU frequency scaling** — 240 MHz is only needed while parsing JSON.
-* **Light sleep between screen updates**, waking on the touch IRQ.
-* **Deep sleep with the image retained.** The ILI9341 holds its own frame in
-  GRAM, so the ESP32 can sleep while the panel keeps displaying the last
-  screen with the backlight lit. A "next match" countdown could therefore sit
-  on almost nothing overnight. This remains the biggest available win and is
-  unique to the panel having its own memory.
-* **Configurable quiet hours**, which would also save API calls.
+* **Quiet hours with deep sleep.** Now known to mean a dark screen, which is
+  fine overnight. Wake on the touch IRQ or a timer. This would also save API
+  calls.
+* **Disconnecting the radio** between refreshes when the next is hours away —
+  though it would take the web interface down with it, so it belongs with
+  quiet hours rather than as an always-on behaviour.
+* **A custom IDF sdkconfig with `CONFIG_PM_ENABLE`**, which would make both
+  light sleep and coordinated frequency scaling available. That is a build
+  system change rather than a firmware one.
 
 ### LDR auto-brightness: dropped
 
