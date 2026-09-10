@@ -174,23 +174,37 @@ constexpr uint32_t kMarqueeHoldEndMs   = 1400;
 constexpr uint32_t kMarqueePxPerSecond = 22;
 
 /**
- * Sprite used to clip scrolling text, created once and kept.
+ * Sprite used to clip scrolling text, sized to exactly the width requested.
  *
  * TFT_eSPI has no arbitrary clip region, so the text is drawn into a sprite
  * the width of the column and pushed as a block — which is also why the
  * animation touches no pixels outside its own strip.
  *
- * Kept rather than created per frame: at 136x18x2 it is about 4.9 KB, and
- * allocating and freeing that many times a second would churn a heap whose
- * largest block is 110 KB.
+ * **The width must match what the caller pushes.** pushSprite() writes the
+ * whole sprite, so a sprite wider than the column paints its surplus
+ * background over whatever sits beyond it. That is not hypothetical: the
+ * sprite was previously created at the full column width while the caller
+ * positioned it as though it were `maxWidth` wide, and on the live match
+ * screen — the one panel where the names share a row with the score — the
+ * spill covered the first digit with a black block.
+ *
+ * Kept between calls rather than created per frame: at 136x18x2 it is about
+ * 4.9 KB, and allocating and freeing that many times a second would churn a
+ * heap whose largest block is 110 KB. Recreated only if the width changes,
+ * which in practice happens once.
  */
-TFT_eSprite& nameSprite(TFT_eSPI& tft) {
+TFT_eSprite& nameSprite(TFT_eSPI& tft, int16_t width) {
   static TFT_eSprite sprite(&tft);
-  static bool created = false;
-  if (!created) {
+  static int16_t createdWidth = 0;
+
+  if (createdWidth != width) {
+    if (createdWidth != 0) sprite.deleteSprite();
     sprite.setColorDepth(16);
-    created = sprite.createSprite(columnTextWidth(kHomeColumnX), kNameHeight);
-    if (!created) Serial.println(F("[ui] name sprite allocation failed"));
+    createdWidth = sprite.createSprite(width, kNameHeight) ? width : 0;
+    if (createdWidth == 0) {
+      Serial.printf("[ui] name sprite %dx%d allocation failed\n", width,
+                    kNameHeight);
+    }
   }
   return sprite;
 }
@@ -243,8 +257,10 @@ bool drawColumnName(TFT_eSPI& tft, const char* rawName, int16_t columnX,
     return false;
   }
 
-  TFT_eSprite& sprite = nameSprite(tft);
-  if (sprite.width() < maxWidth) {
+  TFT_eSprite& sprite = nameSprite(tft, maxWidth);
+  // Only an exact match is safe: narrower would crop the text, wider would
+  // paint background over the neighbouring element.
+  if (sprite.width() != maxWidth) {
     // Sprite unavailable: fall back to the static truncated form rather than
     // showing nothing.
     fitClubName(tft, rawName, name, sizeof(name), maxWidth, 2);
@@ -358,26 +374,19 @@ void LiveMatchScreen::draw(TFT_eSPI& tft, const model::Snapshot& d) {
   const model::Fixture&   f = m.fixture;
 
   // --- Scoreline ----------------------------------------------------------
-  char home[model::kNameLen], away[model::kNameLen];
-  shortenClubName(f.homeName, home, sizeof(home));
-  shortenClubName(f.awayName, away, sizeof(away));
-
+  //
+  // The same column centres as the other fixture screens, via the same
+  // helpers. This screen was still edge-aligning its names against the score,
+  // so a name's centre moved with its length — and it had no width fitting at
+  // all, meaning a long name ran off the left edge rather than being trimmed
+  // or scrolled. Names sit on the score's own row, so consistency costs no
+  // vertical space here.
   const int16_t scoreY = kContentTop + 16;
-  tft.setTextDatum(MR_DATUM);
-  tft.setTextColor(f.weAreHome ? colour::kOurTeam : colour::kPrimary,
-                   colour::kBackground);
-  tft.drawString(home, board::kScreenWidth / 2 - 34, scoreY, 2);
-
-  tft.setTextDatum(ML_DATUM);
-  tft.setTextColor(f.weAreHome ? colour::kPrimary : colour::kOurTeam,
-                   colour::kBackground);
-  tft.drawString(away, board::kScreenWidth / 2 + 34, scoreY, 2);
-
   char score[12];
   formatScore(f, score, sizeof(score));
-  tft.setTextDatum(MC_DATUM);
-  tft.setTextColor(colour::kPrimary, colour::kBackground);
-  tft.drawString(score, board::kScreenWidth / 2, scoreY, 4);
+  drawFixtureCentre(tft, scoreY, score, colour::kPrimary);
+  drawFixtureNames(tft, f, scoreY);
+  namesY_ = scoreY;
 
   // --- Clock and state ----------------------------------------------------
   char clock[24];
@@ -446,6 +455,13 @@ void LiveMatchScreen::draw(TFT_eSPI& tft, const model::Snapshot& d) {
 
     nextRow[col] += kRowHeight;
   }
+}
+
+bool LiveMatchScreen::animate(TFT_eSPI& tft, const model::Snapshot& d) {
+  if (namesY_ == 0 || !d.liveActive) return false;
+  // Without this the names would only shift when the once-a-second clock
+  // refresh redrew them, which reads as stuttering rather than scrolling.
+  return drawFixtureNames(tft, d.live.fixture, namesY_);
 }
 
 // ---------------------------------------------------------------------------

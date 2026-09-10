@@ -69,11 +69,16 @@ constexpr const char* kOurTla = "BOL";
 /**
  * Whether to simulate a match in progress.
  *
- * True while the live-match UI is being developed, since a real live match
- * involving one specific club cannot be summoned to order. Set to **false**
- * once the API client supplies genuine live data.
+ * Off in normal builds. Settable at build time because a real live match
+ * involving one specific club cannot be summoned to order, and the live screen
+ * is the hardest part of the UI to exercise any other way:
+ *
+ *   PLATFORMIO_BUILD_FLAGS="-DSIMULATE_LIVE_MATCH=1" pio run --target upload
  */
-constexpr bool kSimulateLiveMatch = false;
+#ifndef SIMULATE_LIVE_MATCH
+#define SIMULATE_LIVE_MATCH 0
+#endif
+constexpr bool kSimulateLiveMatch = (SIMULATE_LIVE_MATCH != 0);
 
 /// Top scorers from /competitions/ELC/scorers. `assists` is null on the free
 /// tier, so it is absent from the model entirely rather than shown as zero.
