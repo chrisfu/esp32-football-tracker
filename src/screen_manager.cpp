@@ -7,6 +7,8 @@
 
 #include <Arduino.h>
 
+#include "power.h"
+
 namespace ui {
 namespace {
 
@@ -167,6 +169,10 @@ void ScreenManager::redrawContent() {
   tft_->fillRect(0, kContentTop, kContentWidth, kContentHeight,
                  colour::kBackground);
   screens_[current_]->draw(*tft_, *data_);
+  // Counted because SPI traffic is both CPU time and bus power, and a screen
+  // that redraws needlessly is the kind of waste that is invisible without
+  // being measured.
+  power::noteRedraw();
 }
 
 void ScreenManager::handleGesture(touch::Gesture gesture) {
@@ -239,8 +245,10 @@ void ScreenManager::tick() {
   }
 
   // Live content (a match clock, a countdown) refreshes on its own schedule,
-  // rate-limited so it cannot monopolise the SPI bus.
-  if (screens_[current_]->needsRedraw() &&
+  // rate-limited so it cannot monopolise the SPI bus — and skipped entirely
+  // while dimmed, since the point of the refresh is that someone is reading
+  // it.
+  if (!lowPower_ && screens_[current_]->needsRedraw() &&
       millis() - lastLiveRedraw_ > kLiveRedrawIntervalMs) {
     lastLiveRedraw_ = millis();
     redrawContent();
