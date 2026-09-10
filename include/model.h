@@ -45,6 +45,15 @@ constexpr uint8_t kCompLen = 20;
 struct TableRow {
   char    tla[kTlaLen]   = {0};
   char    name[kNameLen] = {0};
+  /**
+   * football-data team id.
+   *
+   * Retained so the web interface can list every club in the competition
+   * alongside its id — which is the whole answer to "how do I find the id of
+   * the team I want to track", at least for a club in the league already
+   * being followed. Two bytes per row, 48 for a full table.
+   */
+  uint16_t id            = 0;
   uint8_t position       = 0;
   uint8_t played         = 0;
   uint8_t won            = 0;

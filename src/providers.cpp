@@ -137,6 +137,7 @@ void parseStandings(const JsonDocument& doc, model::Snapshot& out) {
       model::TableRow& dst = out.table[written];
       setField(dst.tla, e["team"]["tla"] | "");
       setField(dst.name, e["team"]["name"] | "");
+      dst.id             = e["team"]["id"] | 0;
       dst.position       = e["position"] | 0;
       dst.played         = e["playedGames"] | 0;
       dst.won            = e["won"] | 0;
@@ -206,6 +207,7 @@ api::Result fetchStandings(model::Snapshot& out) {
   row["points"]         = true;
   row["team"]["tla"]    = true;
   row["team"]["name"]   = true;
+  row["team"]["id"]     = true;
   filter["standings"][0]["type"] = true;
 
   char path[64];
@@ -683,6 +685,14 @@ uint8_t loadFromCache(model::Snapshot& out) {
     ++restored;
   }
   if (restore(store::Doc::Scorers, out, parseScorersShared)) ++restored;
+
+  // A standings document cached by an older firmware has no team ids in it,
+  // because the filter did not ask for them. Rather than show a table of
+  // blanks until the TTL expires, discard it so the next fetch replaces it.
+  if (out.tableRows > 0 && out.table[0].id == 0) {
+    Serial.println(F("[prov] cached standings predate team ids; refetching"));
+    store::clearDoc(store::Doc::Standings);
+  }
 
   if (restored > 0) {
     Serial.printf("[prov] restored %u cached documents, no API calls spent\n",
