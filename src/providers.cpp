@@ -147,8 +147,16 @@ void parseStandings(const JsonDocument& doc, model::Snapshot& out) {
       dst.goalsAgainst   = e["goalsAgainst"] | 0;
       dst.goalDifference = e["goalDifference"] | 0;
       dst.points         = e["points"] | 0;
-      dst.isOurTeam = (g_settings != nullptr) &&
-                      strstr(dst.name, g_settings->teamDisplayName) != nullptr;
+      // Matched on the provider's id, not on the display name.
+      //
+      // This used to be strstr(clubName, teamDisplayName) — a substring test
+      // against a name the *user* typed. It happened to work for "Bolton
+      // Wanderers" inside "Bolton Wanderers FC" and failed silently for
+      // anything else: enter "Man City" for "Manchester City FC" and the row
+      // is never flagged, so the Season screen reports no data and disappears
+      // entirely. The id is exact and is what every other lookup already uses.
+      dst.isOurTeam = (g_settings != nullptr) && dst.id != 0 &&
+                      dst.id == g_settings->footballDataTeamId;
       if (dst.isOurTeam) out.ourRow = written;
       ++written;
     }
@@ -445,6 +453,9 @@ api::Result fetchScorers(model::Snapshot& out) {
   sc["player"]["name"] = true;
   sc["team"]["tla"]    = true;
   sc["team"]["name"]   = true;
+  // Needed to tell our own players from everyone else's; the name comparison
+  // it replaces was unreliable for the same reason as in the standings.
+  sc["team"]["id"]     = true;
 
   // 100 rather than the default 10: the list bottoms out at one goal, so this
   // is what makes our own team's scorers reachable at all. A side near the
@@ -470,12 +481,15 @@ namespace {
 void parseScorersImpl(const JsonDocument& doc, model::Snapshot& out) {
   out.leagueScorerCount = 0;
   out.teamScorerCount   = 0;
-  const char* ourName =
-      (g_settings != nullptr) ? g_settings->teamDisplayName : "Bolton";
+  const uint16_t ourId =
+      (g_settings != nullptr) ? g_settings->footballDataTeamId : 0;
 
   for (JsonObjectConst e : doc["scorers"].as<JsonArrayConst>()) {
-    const char* club = e["team"]["name"] | "";
-    const bool ours = strstr(club, ourName) != nullptr;
+    // By id, for the same reason as the standings: a display name the user
+    // typed is not a reliable key. When this failed, teamScorerCount stayed
+    // at zero and the screen quietly fell back to the league-wide chart —
+    // which looks like a design choice rather than a lookup that missed.
+    const bool ours = (ourId != 0) && ((e["team"]["id"] | 0) == ourId);
 
     // The response is ordered by goals, so the first few are the league
     // leaders and the first few of ours are our leaders. No sorting needed.
@@ -686,14 +700,9 @@ uint8_t loadFromCache(model::Snapshot& out) {
   }
   if (restore(store::Doc::Scorers, out, parseScorersShared)) ++restored;
 
-  // A standings document cached by an older firmware has no team ids in it,
-  // because the filter did not ask for them. Rather than show a table of
-  // blanks until the TTL expires, discard it so the next fetch replaces it.
-  if (out.tableRows > 0 && out.table[0].id == 0) {
-    Serial.println(F("[prov] cached standings predate team ids; refetching"));
-    store::clearDoc(store::Doc::Standings);
-  }
-
+  // No per-document shape check here: the cache schema version in store.cpp
+  // covers this generally, and two mechanisms doing the same job is how one
+  // of them ends up forgotten.
   if (restored > 0) {
     Serial.printf("[prov] restored %u cached documents, no API calls spent\n",
                   restored);

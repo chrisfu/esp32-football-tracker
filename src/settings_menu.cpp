@@ -89,6 +89,23 @@ void SettingsMenu::drawRoot(TFT_eSPI& tft) {
   }
 }
 
+/**
+ * The tracked club's name, taken from the data rather than from settings.
+ *
+ * Falls back to the stored name only before any standings have been fetched,
+ * which is the one moment the data cannot answer.
+ */
+const char* SettingsMenu::teamLabel() const {
+  if (data_ != nullptr) {
+    const model::TableRow* us = data_->ourTeam();
+    if (us != nullptr && us->name[0] != '\0') return us->name;
+  }
+  if (settings_ != nullptr && settings_->teamDisplayName[0] != '\0') {
+    return settings_->teamDisplayName;
+  }
+  return "not identified";
+}
+
 void SettingsMenu::drawDeviceInfo(TFT_eSPI& tft) {
   drawTitle(tft, "Device info");
 
@@ -113,8 +130,7 @@ void SettingsMenu::drawDeviceInfo(TFT_eSPI& tft) {
       {"Address",  st.ip[0] != '\0' ? st.ip : "-", colour::kOurTeam},
       {"Web UI",   "http://football.local", colour::kAccent},
       {"Signal",   signalBuf, colour::kPrimary},
-      {"Team",     settings_ != nullptr ? settings_->teamDisplayName : "-",
-       colour::kPrimary},
+      {"Team",     teamLabel(), colour::kPrimary},
       {"Clock",    st.timeSynced ? "synced" : "not synced",
        st.timeSynced ? colour::kWin : colour::kDraw},
       {"API calls", quotaBuf, colour::kPrimary},

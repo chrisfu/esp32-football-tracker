@@ -437,8 +437,8 @@ void handleSettings() {
     }
     sendChunk("</table></details>");
   }
-  textField("teamname", "Display name", c.teamDisplayName,
-            "shown on screen");
+  textField("teamname", "Fallback name", c.teamDisplayName,
+            "optional; the real name comes from the league table");
   snprintf(buf, sizeof(buf), "%u", c.footballDataTeamId);
   textField("fdteam", "football-data team id", buf, "Bolton = 60");
   snprintf(buf, sizeof(buf), "%u", c.apiSportsTeamId);
