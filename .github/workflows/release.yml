@@ -108,15 +108,27 @@ jobs:
         # same one forever. Better to fail the release than ship it.
         run: |
           EXPECTED="${{ steps.version.outputs.version }}"
-          if ! grep -qF "$EXPECTED" .pio/build/cyd/firmware.bin; then
+
+          # -a matters. Without it grep treats firmware.bin as binary, and the
+          # exit status for a match is not consistent between GNU grep (0, as
+          # the runner has) and BSD grep (1, as macOS has). A check that
+          # silently inverts depending on where it runs is worse than none, and
+          # this one is the last line of defence before a release ships.
+          if ! grep -aqF "$EXPECTED" .pio/build/cyd/firmware.bin; then
             echo "::error::firmware does not contain version string $EXPECTED"
             exit 1
           fi
           # Belt and braces against the dirty-tree case above: a released
-          # binary must never carry a build slug that says it came from an
-          # edited working copy.
-          if grep -qF "${EXPECTED}+dirty" .pio/build/cyd/firmware.bin; then
+          # binary must never carry a build slug saying it came from an edited
+          # working copy, which is what v0.2.0 shipped.
+          if grep -aqF "${EXPECTED}+dirty" .pio/build/cyd/firmware.bin; then
             echo "::error::firmware is stamped ${EXPECTED}+dirty"
+            exit 1
+          fi
+          # The OTA default must survive into the image, or a freshly flashed
+          # device never looks for updates.
+          if ! grep -aqF "manifest.json" .pio/build/cyd/firmware.bin; then
+            echo "::error::firmware carries no OTA manifest URL"
             exit 1
           fi
           if [ "${{ steps.version.outputs.stable }}" = "true" ] \
