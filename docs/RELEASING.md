@@ -253,6 +253,9 @@ than a header left the default build broken while the flagged build passed.
 - [ ] `README.md` still accurate
 - [ ] `CHANGELOG.md` updated for this version (`tools/update_changelog.py`),
       committed in the pull request — CI does not write it
+- [ ] `VERSION` bumped in the same pull request. It is only the fallback for a
+      build with no git metadata, but CI no longer writes it, so nothing else
+      will
 - [ ] `git push --tags` is up to date — the previous tag must exist **on the
       remote**, not just locally. The release notes are built from
       `previous-tag..new-tag`, and the workflow only sees tags the runner can

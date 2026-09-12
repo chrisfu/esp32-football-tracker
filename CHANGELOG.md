@@ -11,6 +11,15 @@ subjects clear is what keeps this file useful.
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-09-12
+
+- fix: show the device's real mDNS address on the Device info and How to use screens, instead of a fixed football.local that stopped resolving once hostnames gained a per-device suffix
+- fix: stop the release workflow dirtying the working tree before it builds, which stamped v0.2.0's binary as "0.2.0+dirty"
+- feat: default the OTA manifest URL, so a freshly flashed device checks for updates without being configured first
+- feat: distribute the OTA manifest as a release asset rather than a file on main, so publishing a release is what distributes it
+- fix: make the release workflow's binary checks reliable regardless of how grep handles binary files
+- fix: correct the blank-line spacing that the changelog generator left between sections
+
 ## [0.2.0] - 2026-09-12
 
 - fix: fail loudly if the release manifest cannot be pushed to main
