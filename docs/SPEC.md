@@ -29,7 +29,7 @@ These are the project's standing constraints. All later sections must comply.
 
 ## 2. Hardware envelope
 
-Full verified detail in [docs/HARDWARE.md](docs/HARDWARE.md). The numbers that
+Full verified detail in [docs/HARDWARE.md](HARDWARE.md). The numbers that
 drive design:
 
 * **ESP32-D0WD-V3**, dual core 240 MHz, Wi-Fi + BT.
@@ -112,7 +112,7 @@ The full table is 20 rows × 9 columns (Club, MP, W, D, L, GF, GA, GD, Pts) on a
   rather than a full framebuffer. Costs 15 KB instead of 150 KB.
 * Vertical drag to scroll; our team's row is highlighted and the view opens
   centred on it. Note the digitizer's axes are transposed relative to the
-  display (see [docs/HARDWARE.md](docs/HARDWARE.md)) — the touch layer resolves
+  display (see [docs/HARDWARE.md](HARDWARE.md)) — the touch layer resolves
   this, so screens work in plain screen coordinates.
 * Club names use the **official `tla` 3-letter code** supplied by
   football-data.org (`BOL`, `WHU`, `QPR`) — no abbreviation logic needed — with
@@ -1039,7 +1039,7 @@ changes, one symptom, and the obvious explanation was the wrong one.
 ### LDR auto-brightness: dropped
 
 The ambient light sensor reads a flat zero on this unit (see
-[docs/HARDWARE.md](docs/HARDWARE.md)), so automatic brightness is not
+[docs/HARDWARE.md](HARDWARE.md)), so automatic brightness is not
 available. Inactivity dimming — the measure that actually matters — is
 unaffected, since it depends on touch rather than light.
 

@@ -2,14 +2,15 @@ name: Release
 
 # Cutting a release is one action: push a SemVer tag.
 #
-#   git tag -a v0.2.0 -m "..." && git push origin v0.2.0
+#   git tag -a v0.2.0 -m "Live match fixes" && git push origin v0.2.0
 #
-# This then builds the firmware, publishes it as a release asset, and updates
-# the manifest the devices poll. Nothing is edited by hand, so the tag, the
-# binary and the manifest cannot disagree.
-# Stable tags are v1.2.3. Pre-release tags (v1.2.3-rc1, v1.2.3-beta2) are
-# also published, but marked as pre-releases and deliberately kept out of the
-# manifest — devices only ever install plain numbered releases.
+# A plain triple (v0.2.0) is a stable release: marked Latest, added to the
+# changelog, and offered to devices over the air.
+#
+# Anything with a suffix (v0.2.0-rc1, v0.2.0-beta.2, v0.2.0-alpha1) is a
+# pre-release: published with a binary, clearly marked, and deliberately kept
+# out of the update manifest. Devices refuse to install pre-releases even if a
+# manifest advertises one, so this is belt and braces.
 on:
   push:
     tags:
@@ -22,7 +23,7 @@ on:
         required: true
 
 permissions:
-  contents: write   # Needed to create the release and commit the manifest.
+  contents: write   # Create the release, and commit the manifest and changelog.
 
 jobs:
   release:
@@ -50,103 +51,150 @@ jobs:
           VERSION="${TAG#v}"
 
           # Stable means a plain numeric triple and nothing else. This single
-          # test decides three things: whether the release is marked stable,
-          # whether it becomes "Latest", and whether the manifest devices poll
-          # is updated. Keeping it in one place is why those cannot disagree.
+          # test decides four things: how the release is labelled, whether it
+          # becomes Latest, whether the manifest devices poll is updated, and
+          # whether the changelog gains an entry. Keeping it in one place is
+          # why those cannot disagree.
           if printf '%s' "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
             STABLE=true
           else
             STABLE=false
           fi
 
+          # The previous stable tag, for the change list. Pre-releases are
+          # excluded so a release lists everything since the last release
+          # people actually received.
+          PREV=$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname \
+                 | grep -vE -- '-' | grep -v "^${TAG}$" | head -1)
+
           echo "tag=$TAG"         >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "stable=$STABLE"   >> "$GITHUB_OUTPUT"
-          echo "Tag $TAG -> version $VERSION (stable: $STABLE)"
+          echo "prev=$PREV"       >> "$GITHUB_OUTPUT"
+          echo "Tag $TAG -> version $VERSION (stable: $STABLE, previous: ${PREV:-none})"
 
-          # Keep the VERSION fallback file honest, so a source archive with no
-          # git metadata still reports the right version.
           echo "$VERSION" > VERSION
 
       - name: Build
         run: pio run -e cyd
 
       - name: Verify the binary reports the tagged version
-        # A mismatch here means the version plumbing is broken, and shipping a
-        # binary that misreports its own version would make OTA comparisons
-        # meaningless — the device would refuse or repeat updates forever.
+        # A binary that misreports its own version makes OTA comparisons
+        # meaningless — devices would refuse a real update, or reinstall the
+        # same one forever. Better to fail the release than ship it.
         run: |
           EXPECTED="${{ steps.version.outputs.version }}"
           if ! grep -qF "$EXPECTED" .pio/build/cyd/firmware.bin; then
             echo "::error::firmware does not contain version string $EXPECTED"
             exit 1
           fi
+          if [ "${{ steps.version.outputs.stable }}" = "true" ] \
+             && printf '%s' "$EXPECTED" | grep -q -- '-'; then
+            echo "::error::marked stable but the version carries a suffix"
+            exit 1
+          fi
           echo "Binary reports $EXPECTED"
 
-          # A stable release must not be built from a tag the version plumbing
-          # would treat as a pre-release, and vice versa. Catching a mismatch
-          # here is far better than shipping a binary whose own idea of its
-          # stability differs from the release it is attached to.
-          if [ "${{ steps.version.outputs.stable }}" = "true" ]; then
-            if printf '%s' "$EXPECTED" | grep -q -- '-'; then
-              echo "::error::marked stable but version contains a suffix"
-              exit 1
-            fi
-          fi
-
-      - name: Build the manifest
-        id: manifest
+      - name: Assemble artefacts
+        id: artefacts
         run: |
-          BIN=.pio/build/cyd/firmware.bin
           VERSION="${{ steps.version.outputs.version }}"
           TAG="${{ steps.version.outputs.tag }}"
+          REPO="${GITHUB_REPOSITORY}"
+          BIN="firmware-${VERSION}.bin"
+
+          cp .pio/build/cyd/firmware.bin "$BIN"
           SHA=$(sha256sum "$BIN" | cut -d' ' -f1)
           SIZE=$(stat -c%s "$BIN")
-          REPO="${GITHUB_REPOSITORY}"
+
+          # A sidecar in the format `shasum -c` expects, so anyone can verify a
+          # download with one command rather than comparing strings by eye.
+          echo "${SHA}  ${BIN}" > "${BIN}.sha"
 
           mkdir -p firmware
           cat > firmware/manifest.json <<JSON
           {
             "version": "$VERSION",
-            "url": "https://github.com/$REPO/releases/download/$TAG/firmware.bin",
+            "url": "https://github.com/$REPO/releases/download/$TAG/$BIN",
             "size": $SIZE,
             "sha256": "$SHA",
             "released": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           }
           JSON
-          cp "$BIN" "firmware-$VERSION.bin"
-          echo "sha=$SHA"   >> "$GITHUB_OUTPUT"
-          echo "size=$SIZE" >> "$GITHUB_OUTPUT"
-          cat firmware/manifest.json
+
+          echo "sha=$SHA"     >> "$GITHUB_OUTPUT"
+          echo "size=$SIZE"   >> "$GITHUB_OUTPUT"
+          echo "bin=$BIN"     >> "$GITHUB_OUTPUT"
+          cat "${BIN}.sha"
+
+      - name: Build the change list
+        id: changes
+        run: |
+          PREV="${{ steps.version.outputs.prev }}"
+          TAG="${{ steps.version.outputs.tag }}"
+
+          if [ -n "$PREV" ]; then
+            RANGE="${PREV}..${TAG}"
+          else
+            RANGE="$TAG"
+          fi
+
+          # Commit subjects, as bullets. Merge commits are dropped because they
+          # restate the branch they merged, and the branch's own commit already
+          # says what changed.
+          git log --no-merges --pretty=format:'- %s' "$RANGE" > /tmp/changes.md || true
+          if [ ! -s /tmp/changes.md ]; then
+            echo "- No changes recorded" > /tmp/changes.md
+          fi
+
+          echo "Changes in $RANGE:"
+          cat /tmp/changes.md
+
+          {
+            echo 'list<<CHANGES_EOF'
+            cat /tmp/changes.md
+            echo 'CHANGES_EOF'
+          } >> "$GITHUB_OUTPUT"
 
       - name: Publish a stable release
         if: steps.version.outputs.stable == 'true'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.version.outputs.tag }}
-          name: v${{ steps.version.outputs.version }} — Stable
-          generate_release_notes: true
+          name: v${{ steps.version.outputs.version }}
           prerelease: false
           make_latest: true
           files: |
-            .pio/build/cyd/firmware.bin
+            ${{ steps.artefacts.outputs.bin }}
+            ${{ steps.artefacts.outputs.bin }}.sha
             firmware/manifest.json
           body: |
-            ## ESP32 Football Tracker v${{ steps.version.outputs.version }}
-
             ✅ **Stable release.** Offered to devices over the air.
 
-            **Over-the-air:** devices checking daily will offer this
-            automatically. Installing always needs a button press.
+            ### Changes
 
-            **Manual:** download `firmware.bin` and upload it from the
-            device's System page, or flash with
-            `pio run --target upload`.
+            ${{ steps.changes.outputs.list }}
+
+            ### Install
+
+            Devices checking for updates will offer this on the **System**
+            page; installing always needs a button press. To flash manually:
+
+            ```
+            esptool --port /dev/ttyUSB0 --baud 115200 \
+              write-flash 0x10000 ${{ steps.artefacts.outputs.bin }}
+            ```
+
+            Verify the download first if you like:
+
+            ```
+            shasum -a 256 -c ${{ steps.artefacts.outputs.bin }}.sha
+            ```
 
             | | |
             |---|---|
-            | Size | ${{ steps.manifest.outputs.size }} bytes |
-            | SHA-256 | `${{ steps.manifest.outputs.sha }}` |
+            | Size | ${{ steps.artefacts.outputs.size }} bytes |
+            | SHA-256 | `${{ steps.artefacts.outputs.sha }}` |
 
             Published binaries contain **no API keys** — enter your own on the
             device's Settings page.
@@ -156,51 +204,64 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.version.outputs.tag }}
-          name: v${{ steps.version.outputs.version }} — Pre-release
-          generate_release_notes: true
+          name: v${{ steps.version.outputs.version }}
           prerelease: true
           make_latest: false
-          # The manifest is deliberately NOT attached. Publishing one here
-          # would invite someone to point a device at it, which is exactly
-          # what this release must not be used for.
+          # The manifest is deliberately not attached. Publishing one here
+          # would invite someone to point a device at it, which is exactly what
+          # this separation prevents.
           files: |
-            .pio/build/cyd/firmware.bin
+            ${{ steps.artefacts.outputs.bin }}
+            ${{ steps.artefacts.outputs.bin }}.sha
           body: |
-            ## ESP32 Football Tracker v${{ steps.version.outputs.version }}
-
             ⚠️ **Pre-release. Not distributed over the air.**
 
-            Devices only ever install plain numbered releases, so this will
-            never be offered automatically — and the firmware refuses to
-            install a pre-release even if a manifest advertises one. Install it
-            deliberately: upload `firmware.bin` from the System page, or flash
-            over USB with `pio run --target upload`.
+            Devices only install plain numbered releases, and the firmware
+            refuses a pre-release even if a manifest advertises one. Install
+            this deliberately: upload the `.bin` from the System page, or flash
+            over USB.
+
+            ### Changes
+
+            ${{ steps.changes.outputs.list }}
 
             | | |
             |---|---|
-            | Size | ${{ steps.manifest.outputs.size }} bytes |
-            | SHA-256 | `${{ steps.manifest.outputs.sha }}` |
+            | Size | ${{ steps.artefacts.outputs.size }} bytes |
+            | SHA-256 | `${{ steps.artefacts.outputs.sha }}` |
 
-      - name: Update the manifest devices poll
+      - name: Update the manifest and changelog
         # Stable releases only. A pre-release must not touch the manifest, or
-        # every device polling it would be offered a release candidate — which
-        # is the whole thing this separation prevents.
+        # every device polling it would be offered a release candidate.
         if: steps.version.outputs.stable == 'true'
-        # Committed to the default branch so the device has a stable URL that
-        # needs no redirect and no API call. raw.githubusercontent.com serves
-        # a Let's Encrypt certificate, which the firmware already trusts.
         run: |
+          VERSION="${{ steps.version.outputs.version }}"
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git fetch origin main
           git checkout main
-          cp firmware/manifest.json /tmp/manifest.json
-          mkdir -p firmware && cp /tmp/manifest.json firmware/manifest.json
-          echo "${{ steps.version.outputs.version }}" > VERSION
-          git add firmware/manifest.json VERSION
+
+          # Regenerated on main so the committed copy matches what was just
+          # published. raw.githubusercontent.com serves this, which is why the
+          # device needs no redirect and no API call to check for updates.
+          mkdir -p firmware
+          cat > firmware/manifest.json <<JSON
+          {
+            "version": "$VERSION",
+            "url": "https://github.com/${GITHUB_REPOSITORY}/releases/download/${{ steps.version.outputs.tag }}/${{ steps.artefacts.outputs.bin }}",
+            "size": ${{ steps.artefacts.outputs.size }},
+            "sha256": "${{ steps.artefacts.outputs.sha }}",
+            "released": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          }
+          JSON
+          echo "$VERSION" > VERSION
+
+          python3 tools/update_changelog.py "$VERSION" /tmp/changes.md
+
+          git add firmware/manifest.json VERSION CHANGELOG.md
           if git diff --cached --quiet; then
-            echo "manifest unchanged"
+            echo "nothing to commit"
           else
-            git commit -m "chore: publish v${{ steps.version.outputs.version }} manifest [skip ci]"
+            git commit -m "chore: publish v${VERSION}"
             git push origin main
           fi

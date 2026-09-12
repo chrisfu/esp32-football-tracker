@@ -1,170 +1,344 @@
 # ESP32 Football Tracker
 
 A football (soccer) statistics display for the ESP32 **"Cheap Yellow Display"**
-(2.8" ESP32-2432S028R). It follows one team and cycles through screens of live
-scores, results, fixtures, the league table, top scorers and injuries — all
-configured from a built-in web interface, with a first-boot Wi-Fi setup portal.
+(2.8" ESP32-2432S028R). It follows one club and cycles through live scores,
+results, fixtures, the league table, top scorers and form — configured entirely
+from a built-in web interface, with no hard-coded team.
 
-Default team is **Bolton Wanderers** (English Championship), configurable from
-the web UI.
+<!-- Add a photo of the device here once you have one. -->
 
-Built against the [API-Sports football API](https://v3.football.api-sports.io)
-free tier, which allows **100 requests per day** — so the design is
-aggressively cache-first and budget-aware. Note that the free tier turns out to
-carry [significant undocumented restrictions](#-the-free-tier-is-more-restricted-than-its-own-metadata-suggests).
+## Contents
 
-> **Status:** early development. Hardware discovery complete; firmware bring-up
-> next. See [SPEC.md](SPEC.md) for the design and [the roadmap](SPEC.md#11-roadmap)
-> for progress.
+- [What it shows](#what-it-shows)
+- [What you need](#what-you-need)
+- [Getting started](#getting-started)
+  - [1. Get API keys](#1-get-api-keys)
+  - [2. Flash the firmware](#2-flash-the-firmware)
+  - [3. Connect it to Wi-Fi](#3-connect-it-to-wi-fi)
+  - [4. Choose your club](#4-choose-your-club)
+- [Finding your team's IDs](#finding-your-teams-ids)
+- [Supported competitions](#supported-competitions)
+- [Using the device](#using-the-device)
+- [The web interface](#the-web-interface)
+- [Updating](#updating)
+- [API usage and limits](#api-usage-and-limits)
+- [Building from source](#building-from-source)
+- [Tested hardware](#tested-hardware)
+- [Troubleshooting](#troubleshooting)
+- [Contributing](#contributing)
+- [Reporting problems](#reporting-problems)
+- [Licence](#licence)
 
-## Releases and updates
+## What it shows
 
-Versioned with SemVer, built by GitHub Actions, and installable over the air.
-Cutting a release is one action — push a tag — and the binary, its SHA-256 and
-the manifest devices poll are all generated from it. See
-[RELEASING.md](RELEASING.md).
+Screens cycle automatically, and any of them can be turned off.
 
-Published binaries contain **no API keys**; enter your own on the device's
-Settings page.
-
-## Documentation
-
-| Document | Contents |
+| Screen | Shows |
 |---|---|
-| [SPEC.md](SPEC.md) | Living specification — architecture, screens, caching, API budget, power plan |
-| [docs/HARDWARE.md](docs/HARDWARE.md) | Verified hardware reference, GPIO map and discovery commands |
+| **Live** | Score, match clock, goalscorers, cards — updates during the match |
+| **Season** | Played, won, drawn, lost, win rate, position, goal difference, form |
+| **Last** | Most recent result with both crests, the verdict and the competition |
+| **Next** | Next fixture, countdown, both clubs' recent form, both crests |
+| **Table** | Full league table (MP, W, D, L, GF, GA, GD, Pts), opening on your club |
+| **Scorers** | Your club's top scorers, with the league leader for context |
 
-## Tested devices
+A match in progress takes over: the device shows it by default and returns to
+it after the dwell period, so you are never more than a few seconds from the
+score.
 
-Hardware that has been physically verified for this project. Values here were
-read back **from the board itself**, not from a datasheet — see
-[docs/HARDWARE.md](docs/HARDWARE.md) for the commands to reproduce them.
+## What you need
 
-### ✅ ESP32-2432S028R — 2.8" Cheap Yellow Display
+- An **ESP32-2432S028R** "Cheap Yellow Display" (2.8", resistive touch)
+- A USB cable (micro-USB on most boards)
+- A 2.4 GHz Wi-Fi network — the ESP32 has no 5 GHz radio
+- Two free API keys (below)
 
-*Tested 2026-09-09 — the primary development target.*
+## Getting started
 
-| Property | Value |
-|---|---|
-| Board | ESP32-2432S028R ("Cheap Yellow Display", 2.8") |
-| Chip | ESP32-D0WD-V3, revision **v3.1** |
-| Cores | 2 × Xtensa LX6 @ 240 MHz |
-| Radio | Wi-Fi 802.11 b/g/n + Bluetooth Classic / BLE |
-| Crystal | 40 MHz |
-| Flash | **4 MB** (mfr `0x68`, device `0x4016`), DOUT mode @ 40 MHz |
-| PSRAM | **None** — `PKG_VERSION = 1` (D0WD has no in-package PSRAM) |
-| MAC | `20:50:0D:34:04:50` |
-| Display | 320×240 SPI, ILI9341-compatible — **inverted variant**, needs `TFT_INVERSION_ON` |
-| Touch | XPT2046 resistive on independent SPI pins — working; **axes transposed vs display** |
-| Extras | microSD slot (own SPI bus), RGB LED, speaker/DAC, LDR light sensor, 3 free GPIO |
-| USB bridge | **WCH CH340** (`0x1A86:0x7523`) |
-| Serial port | `/dev/cu.usbserial-*` (macOS) — **the digits change on replug**, see below |
-| Flash encryption | Disabled |
-| Secure boot | Not enabled |
-| Display speed | 31.2 ms full-screen fill (~2.5 Mpixel/s) at 40 MHz SPI |
-| Free heap / largest block | 349,900 B / **114,676 B contiguous** |
-| Light sensor | ⚠️ reads 0 — **likely not populated** on this unit |
-| As shipped | Factory LVGL 8.3.3 demo over TFT_eSPI with SPI DMA (since overwritten) |
-| Partitions | Stock Arduino dual-OTA: `nvs` 20 K, `otadata` 8 K, `app0`/`app1` 1280 K each, `spiffs` 1472 K |
+### 1. Get API keys
 
-**Findings worth knowing before you flash this board:**
+Both are free and take a minute.
 
-* ⚠️ **The macOS device name is not stable.** The digits in
-  `/dev/cu.usbserial-NNNN` encode the USB hub port, so replugging elsewhere
-  renames the device — this board moved from `usbserial-2130` to
-  `usbserial-130` mid-session, which presents as a baffling "port doesn't
-  exist" while the CH340 is still visible in the USB tree. `platformio.ini`
-  matches the port by glob for exactly this reason.
-* ⚠️ **The CH340 on this unit is not reliable above 115200 baud.** Flash reads at
-  460800 failed with `Invalid head of packet (0x80): Possible serial noise or
-  corruption` and worked first time at 115200. Upload and monitor speeds are
-  pinned to 115200 in `platformio.ini` — don't raise them without re-testing.
-* ⚠️ **No PSRAM.** With ~320 KB of internal DRAM (and only ~160–200 KB free once
-  Wi-Fi and TLS are up), a full 320×240×16-bit framebuffer would need 150 KB and
-  is simply not affordable. The firmware streams API responses straight into a
-  filtered JSON parser and draws through a small reusable sprite instead.
-* ⚠️ **This panel is an inverted variant.** With a stock ILI9341 config it
-  renders every colour as its exact complement — white background, black text,
-  green as magenta, blue as yellow. The fix is `-D TFT_INVERSION_ON=1`, already
-  applied. Note this is *not* a BGR channel-order problem, which is the usual
-  first guess: a BGR panel swaps red and blue only and leaves white and green
-  alone. Geometry, pin map and offsets all needed no correction.
-* ⚠️ **Panel ID read-back is unavailable.** Both `0xD3` and `0x04` return all
-  zeroes, because MISO is on GPIO12, a live strapping pin. Identify the panel
-  visually with a test pattern instead — all-zeroes means "can't tell", not
-  "wrong panel".
-* ⚠️ **The touch digitizer's axes are transposed relative to the display.**
-  Controller Y drives screen X (measured: 2910 counts vs 76 across screen X).
-  Beware that a two-point calibration on opposite corners *cannot detect this*
-  — both fits look valid — and the symptom is subtle: drawing and tapping seem
-  fine while swipes go the wrong way. Calibrate with three targets and verify
-  with a directional swipe.
-* ⚠️ **The light sensor reads a flat 0** (142 mV is just the ADC calibration
-  floor), so GPIO34 is at ground and the LDR is probably not populated on this
-  unit. Auto-brightness may therefore be unavailable; inactivity-based dimming
-  works regardless.
-* ℹ️ `GPIO12` (display MISO) is a live strapping pin — never drive it high at
-  boot. `GPIO2` and `GPIO15` are also straps but are safely wired here.
-* ℹ️ Display, touch and SD sit on **three separate SPI groupings**, so SD access
-  never stalls display updates.
-* ℹ️ Touch IRQ (`GPIO36`) is RTC-capable, so **wake-on-touch from deep sleep**
-  works. The LDR (`GPIO34`) is on ADC1, which keeps working while Wi-Fi is
-  active.
+| Provider | Used for | Register |
+|---|---|---|
+| **football-data.org** | Table, fixtures, scorers, form | <https://www.football-data.org/client/register> |
+| **api-sports.io** | Live match scores and events | <https://dashboard.api-football.com/register> |
 
-## Toolchain
+Only football-data.org is strictly required. Without api-sports the Live
+screen simply never appears; everything else works.
 
-Development uses PlatformIO with the Arduino framework:
+### 2. Flash the firmware
 
-| Component | Version |
-|---|---|
-| PlatformIO Core | 6.1.19 |
-| `espressif32` platform | 6.13.0 |
-| Arduino ESP32 core | 2.0.17 |
-| esptool | 5.0.0 |
+Download `firmware-<version>.bin` from the
+[latest release](../../releases/latest), then either:
+
+**With esptool** (no toolchain needed):
 
 ```bash
-# Build, flash and monitor (serial speed pinned to 115200 — see above)
-pio run
+pip install esptool
+esptool --port /dev/ttyUSB0 --baud 115200 write-flash 0x10000 firmware-0.1.0.bin
+```
+
+**Or from source** — see [Building from source](#building-from-source).
+
+> **Keep the baud rate at 115200.** The CH340 bridge fitted to these boards is
+> not reliable above that, and a faster upload can corrupt the flash silently.
+
+Each release also ships `firmware-<version>.bin.sha` containing the SHA-256 of
+the binary, so you can check what you downloaded:
+
+```bash
+shasum -a 256 -c firmware-0.1.0.bin.sha
+```
+
+### 3. Connect it to Wi-Fi
+
+On first boot the device has no credentials, so it starts its own access
+point and shows you everything you need **on the screen**:
+
+```
+        SETUP REQUIRED
+   Join this Wi-Fi network:
+   NETWORK    FootballTracker-A1B2
+   PASSWORD   football
+   THEN OPEN  http://4.3.2.1
+```
+
+Join that network from a phone or laptop — a setup page should open by itself.
+Pick your network, enter its password (there is a *Show password* box), and the
+device restarts and connects.
+
+### 4. Choose your club
+
+Browse to the device — its address is on the **Device info** page of the
+on-screen settings menu (long-press the screen), or try
+`http://football-XXXX.local`. Then open **Settings** and fill in:
+
+- Both **API keys**
+- Your **football-data team id** and **api-sports team id** (see below)
+- The **competition code** (for example `PL` or `ELC`)
+
+Settings take effect immediately — no restart.
+
+## Finding your team's IDs
+
+The two providers number teams differently, so you need one id from each. This
+matters more than it sounds: **football-data id 68 is Norwich City, while
+api-sports id 68 is Bolton Wanderers.** Mixing them up shows another club's
+data rather than failing, so it is worth getting right.
+
+### football-data.org
+
+If the club plays in the competition you are already tracking, the device can
+tell you: **Settings → Team → "football-data ids for …"** lists every club in
+the table with its id.
+
+Otherwise, with your key:
+
+```bash
+curl -H "X-Auth-Token: YOUR_KEY" \
+  https://api.football-data.org/v4/competitions/PL/teams \
+  | grep -E '"id"|"name"'
+```
+
+Docs: <https://www.football-data.org/documentation/quickstart>
+
+### api-sports.io
+
+Search by name from their dashboard, or:
+
+```bash
+curl -H "x-apisports-key: YOUR_KEY" \
+  "https://v3.football.api-sports.io/teams?search=arsenal"
+```
+
+Dashboard: <https://dashboard.api-football.com/> ·
+Docs: <https://www.api-football.com/documentation-v3>
+
+## Supported competitions
+
+Whatever football-data.org's free tier covers — currently 13 competitions.
+Use the **Code** in the competition setting:
+
+| Code | Competition | Country |
+|---|---|---|
+| `PL` | Premier League | England |
+| `ELC` | Championship | England |
+| `BL1` | Bundesliga | Germany |
+| `SA` | Serie A | Italy |
+| `PD` | Primera Division | Spain |
+| `FL1` | Ligue 1 | France |
+| `DED` | Eredivisie | Netherlands |
+| `PPL` | Primeira Liga | Portugal |
+| `BSA` | Campeonato Brasileiro Série A | Brazil |
+| `CL` | UEFA Champions League | Europe |
+| `EC` | European Championship | Europe |
+| `CLI` | Copa Libertadores | South America |
+| `WC` | FIFA World Cup | World |
+
+The table, scorers and form come from the competition you set. The **Live**
+screen is not restricted to it — a cup tie or a European night is picked up
+too, because it asks about your club rather than about a league.
+
+## Using the device
+
+| Gesture | Does |
+|---|---|
+| **Swipe left / right** | Change screen |
+| **Double tap** | Hold the current screen, or resume cycling |
+| **Swipe up / down** | Scroll the league table, or the match events |
+| **Long press** (2s) | Open the settings menu |
+
+A single tap does nothing deliberately — on a resistive panel it is far too
+easy to trigger by brushing the screen.
+
+The on-screen menu shows the device's address, a how-to-use page, and guarded
+options to reset Wi-Fi or factory reset. Anything requiring typing lives in the
+web interface instead.
+
+## The web interface
+
+| Page | Contents |
+|---|---|
+| **Status** | Connection, API quota, cache freshness, uptime |
+| **Settings** | API keys, team ids, competition, refresh rates, screens, brightness |
+| **Cache** | What is stored, how fresh, and controls to refresh or clear it |
+| **System** | Version, firmware update, guarded resets |
+
+API keys are never sent back to the browser — the page shows only whether each
+is set, and a blank field leaves it unchanged.
+
+## Updating
+
+**Over the air.** The device checks daily and offers anything newer on
+**System**. Installing always takes a button press; it never replaces firmware
+on its own. The download is hashed and verified before it is committed, so a
+failed update leaves the running firmware untouched.
+
+Only plain numbered releases (`1.2.3`) are offered. Pre-releases
+(`1.2.3-rc1`) are published but never distributed automatically.
+
+**By hand.** Upload a `.bin` from the System page, or flash over USB.
+
+## API usage and limits
+
+| Provider | Limit | What we do |
+|---|---|---|
+| football-data.org | 10/minute, no daily cap | Refresh hourly by default |
+| api-sports.io | 100/day, 10/minute | Live match only, ~12/hour while playing |
+
+On a day with no match, api-sports is not called at all — the cached fixture
+list tells the device there is nothing on, which costs nothing. Everything is
+cached to flash, so **restarting the device spends no requests**.
+
+Both rates are configurable under **Settings → How often to update**.
+
+> If you run more than one tracker, give each its own api-sports key. They
+> share the 100/day allowance otherwise, and two live matches at once will
+> exhaust it.
+
+## Building from source
+
+```bash
+pip install platformio
+git clone <your-fork-url>
+cd ESP32-Football-Tracker
 pio run --target upload
+```
+
+Optionally, to bake API keys into your own build rather than typing them in:
+
+```bash
+cp include/secrets_example.h include/secrets.h
+# edit include/secrets.h — it is gitignored
+```
+
+Useful build flags for development:
+
+```bash
+# Simulate a live match, and narrow the name columns so scrolling engages
+PLATFORMIO_BUILD_FLAGS="-DSIMULATE_LIVE_MATCH=1 -DMARQUEE_SQUEEZE=50" pio run -t upload
+```
+
+## Tested hardware
+
+| Board | Status |
+|---|---|
+| ESP32-2432S028R, 2.8", resistive touch, CH340 | ✅ Verified |
+
+Full details, including the GPIO map and the discovery commands, are in
+[docs/HARDWARE.md](docs/HARDWARE.md).
+
+Two quirks worth knowing if you are porting to another board:
+
+- Some panels of this model power up **colour-inverted** and need
+  `TFT_INVERSION_ON`; ours does.
+- The touch digitizer's axes are **transposed** relative to the display.
+  Calibration detects this — hold **BOOT** during a reset to recalibrate.
+
+## Troubleshooting
+
+**Colours look inverted** — a panel variant. Flip `TFT_INVERSION_ON` in
+`platformio.ini` and reflash.
+
+**Touch is offset or the axes feel wrong** — hold **BOOT** while resetting to
+recalibrate. It asks for three taps and then checks itself.
+
+**The Live screen never appears** — check the api-sports key and team id on the
+Settings page. The Status page shows how much daily quota is left.
+
+**A screen is missing from the rotation** — screens with no data are skipped.
+If Season or Scorers is absent, the football-data team id probably does not
+match the competition you set.
+
+**"Port doesn't exist" when flashing** — the USB device name changes when you
+replug into a different port. `platformio.ini` matches by pattern for this
+reason; with esptool, check the current name.
+
+## Contributing
+
+Contributions are welcome, including bug reports, which are just as useful.
+
+1. **Open an issue first** for anything substantial, so the approach can be
+   agreed before you spend time on it.
+2. **Fork and branch** — one change per branch, named like
+   `feat/live-match-events` or `fix/table-alignment`.
+3. **Keep commits small and readable.** Subject lines are one line, in the
+   imperative: `fix: clip event labels to their column`.
+4. **Comment the *why*, not the *what*.** The codebase explains reasoning,
+   trade-offs and rejected alternatives; please match that.
+5. **Test on hardware.** This project talks to real APIs and a real panel, and
+   several bugs here were invisible until the firmware ran on a board.
+6. **Open a pull request.** CI builds every push; a failing build blocks the
+   merge.
+
+There is no formal style guide beyond matching what is there: Google-ish C++,
+two-space indent, 80 columns.
+
+Areas that would be genuinely useful:
+
+- Other CYD variants, and other display sizes
+- More competitions, or providers with a freer tier
+- A deep-sleep quiet-hours mode (the groundwork is in [docs/SPEC.md](docs/SPEC.md))
+- Translations
+
+## Reporting problems
+
+Please open an [issue](../../issues/new/choose). The template asks for the
+things that usually matter — firmware version, board, competition, and the
+serial log if you can capture one:
+
+```bash
 pio device monitor
 ```
 
-## API notes
-
-The free API-Sports tier has **two** limits, both verified from live response
-headers:
-
-* **100 requests/day**, resetting at midnight UTC (`x-ratelimit-requests-limit`)
-* **10 requests/minute** (`x-ratelimit-limit`) — this one wasn't in the original
-  brief but is just as real
-
-Because every response reports the remaining quota, the device reconciles its
-own counter against the server's figure rather than trusting a local tally that
-could drift. (`/status` proved unreliable for this — it reported 2 of 100 used
-after six billable calls, so the headers are the source of truth.)
-
-### ⚠️ The free tier is more restricted than its own metadata suggests
-
-`/leagues` advertises seasons 2010–2026 with full coverage flags. That describes
-seasons which *exist*, not seasons the plan may *query*. Probing the real data
-endpoints found:
-
-- **Season queries are locked to 2022–2024** — the current season is
-  unreachable for standings, top scorers and team statistics
-- **The `next` and `last` fixture parameters are blocked outright**
-- **Date queries are clamped to roughly ±1 day around today**
-- **But `live=all` works and returns genuinely current in-play matches**
-
-Which is a curious inversion: this API gives away the live data most providers
-charge for, and withholds the static tables most providers hand out free. So the
-live-match screen works well, while the league table, season record and top
-scorer need another source for current-season data.
-
-Resolving this is an open decision — the options and their trade-offs are in
-[the API coverage section](SPEC.md#6-api-budget-rule-r7), along with the full
-probe matrix and the rationing strategy. Usage is tracked and displayed in the
-web interface.
+For anything involving data, the **Status** and **Cache** pages of the web
+interface say a lot in one screenshot.
 
 ## Licence
 
-Not yet chosen.
+[MIT](LICENSE) — do what you like with it.
+
+Football data from [football-data.org](https://www.football-data.org) and
+[API-Sports](https://www.api-football.com). Club crests are served by
+football-data.org and remain the property of their respective clubs.

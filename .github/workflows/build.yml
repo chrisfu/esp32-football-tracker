@@ -1,28 +1,39 @@
 name: Build
 
-# Every push and pull request builds the firmware. The point is to catch a
-# broken build before it reaches a tag, since a release that will not compile
-# is discovered at the worst possible moment.
+# Builds every push and every pull request.
+#
+# The job is named `firmware` and that name is what a branch protection rule
+# should require — see docs/RELEASING.md. A failing build then blocks the
+# merge button rather than merely showing a red cross.
 on:
   push:
     branches: [main]
-    # The release workflow commits the manifest back to main. Ignoring that
-    # path stops a release from triggering a pointless rebuild of itself.
     paths-ignore:
+      # The release workflow commits these back to main; rebuilding for them
+      # would be a loop with nothing to check.
       - 'firmware/manifest.json'
+      - 'CHANGELOG.md'
+      - 'VERSION'
       - '**/*.md'
   pull_request:
-    branches: [main]
+    # Any branch, so a fork's pull request is built too.
   workflow_dispatch:
 
+# A new push to a pull request cancels the previous run: only the latest
+# commit's result is meaningful, and a queue of stale builds delays it.
+concurrency:
+  group: build-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  build:
+  firmware:
+    name: firmware
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
-          # Full history and tags: the version is derived from `git describe`,
-          # and a shallow clone would report every build as untagged.
+          # Full history and tags: the version comes from `git describe`, and a
+          # shallow clone reports every build as untagged.
           fetch-depth: 0
 
       - uses: actions/setup-python@v5
@@ -44,17 +55,37 @@ jobs:
       - name: Build
         # No include/secrets.h in CI, which is deliberate: the header guards on
         # __has_include so the build succeeds with empty keys. A published
-        # binary must not carry anyone's API keys — users enter their own
-        # through the web interface.
+        # binary must never carry anyone's API keys.
         run: pio run -e cyd
+
+      - name: Build with development flags
+        # The simulation and marquee shims are compiled out of normal builds,
+        # so nothing else would catch a mistake in them — and one has already
+        # slipped through: a macro defined in a .cpp rather than a header left
+        # the default build broken while the flagged build compiled fine.
+        run: PLATFORMIO_BUILD_FLAGS="-DSIMULATE_LIVE_MATCH=1 -DMARQUEE_SQUEEZE=50" pio run -e cyd
 
       - name: Report size
         run: |
-          echo "### Firmware size" >> "$GITHUB_STEP_SUMMARY"
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
-          pio run -e cyd --target size 2>&1 | grep -E 'RAM:|Flash:' \
-            >> "$GITHUB_STEP_SUMMARY" || true
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "### Firmware size"
+            echo '```'
+            pio run -e cyd 2>&1 | grep -E 'RAM:|Flash:' || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Warn if flash is nearly full
+        # The app partition is 1280 KB and OTA needs the *new* image to fit the
+        # other slot, so running out is not a build failure but it is the thing
+        # that stops updates working.
+        run: |
+          USED=$(stat -c%s .pio/build/cyd/firmware.bin)
+          LIMIT=$((1280 * 1024))
+          PCT=$((USED * 100 / LIMIT))
+          echo "Firmware is ${USED} bytes, ${PCT}% of the ${LIMIT}-byte partition"
+          if [ "$PCT" -ge 95 ]; then
+            echo "::warning::firmware is ${PCT}% of the app partition"
+          fi
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4

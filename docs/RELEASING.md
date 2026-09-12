@@ -25,11 +25,12 @@ git push origin v0.2.0
 
 **Only plain numbered releases are distributed over the air.**
 
-| Tag | Published as | In the manifest? | Offered over the air? |
-|---|---|---|---|
-| `v0.2.0` | ✅ Stable, marked **Latest** | Yes | Yes |
-| `v0.2.0-rc1` | ⚠️ **Pre-release** | No | No |
-| `v0.2.0-beta.2` | ⚠️ **Pre-release** | No | No |
+| Tag | Published as | In the manifest? | In the changelog? | Over the air? |
+|---|---|---|---|---|
+| `v0.2.0` | ✅ Stable, marked **Latest** | Yes | Yes | Yes |
+| `v0.2.0-rc1` | ⚠️ **Pre-release** | No | No | No |
+| `v0.2.0-beta.2` | ⚠️ **Pre-release** | No | No | No |
+| `v0.2.0-alpha1` | ⚠️ **Pre-release** | No | No | No |
 
 A pre-release still gets a GitHub Release with a binary attached — it is just
 kept out of the manifest devices poll, and GitHub marks it so nobody installs
@@ -126,6 +127,51 @@ An upload has no manifest, so there is no hash to check it against. The image
 header is still validated, which catches a truncated or corrupt file — but
 nothing confirms it is the firmware you intended. The pull path is the safer
 one; upload exists because it works with no internet at all.
+
+## What each release ships
+
+| File | Purpose |
+|---|---|
+| `firmware-X.Y.Z.bin` | The firmware |
+| `firmware-X.Y.Z.bin.sha` | SHA-256 in `shasum -c` format |
+| `firmware/manifest.json` | What devices poll — **stable releases only** |
+
+Release notes always carry a bullet list of the commit subjects since the
+previous *stable* tag. Pre-releases are excluded from that range, so a release
+lists everything since the last one people actually received rather than since
+the last release candidate.
+
+## The changelog
+
+`CHANGELOG.md` gains a dated section automatically on every stable release,
+built from the same commit subjects. `tools/update_changelog.py` does it, and
+is a script rather than an inline snippet so it can be run and checked outside
+CI:
+
+```bash
+git log --no-merges --pretty=format:'- %s' v0.1.0..HEAD > /tmp/changes.md
+python3 tools/update_changelog.py 0.2.0 /tmp/changes.md --dry-run
+```
+
+It declines to record a pre-release, and declines to add a version twice, so
+re-running a release is safe.
+
+## Branch protection
+
+CI builds every pull request as a job named **`firmware`**. To make a failing
+build actually block a merge rather than just show a red cross, add a branch
+protection rule on `main`:
+
+1. **Settings → Branches → Add branch protection rule**
+2. Branch name pattern: `main`
+3. Tick **Require status checks to pass before merging**
+4. Search for and select **`firmware`**
+5. Tick **Require branches to be up to date before merging**
+
+The build also compiles the development shims
+(`SIMULATE_LIVE_MATCH`, `MARQUEE_SQUEEZE`), because nothing else would: they
+are compiled out of normal builds, and a macro once defined in a `.cpp` rather
+than a header left the default build broken while the flagged build passed.
 
 ## Checklist before tagging
 

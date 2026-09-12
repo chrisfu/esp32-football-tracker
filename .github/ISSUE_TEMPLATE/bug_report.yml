@@ -1,0 +1,71 @@
+name: Bug report
+description: Something is not working as expected
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report this.
+
+        The most useful thing you can include is the **serial log** — several
+        bugs in this project were invisible until someone looked at one.
+
+  - type: input
+    id: version
+    attributes:
+      label: Firmware version
+      description: Shown on the web interface Status page, or the System page.
+      placeholder: "0.2.0"
+    validations:
+      required: true
+
+  - type: input
+    id: board
+    attributes:
+      label: Board
+      description: Which display, and anything unusual about it.
+      placeholder: "ESP32-2432S028R 2.8in, CH340"
+    validations:
+      required: true
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you saw, and what you expected instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: How to reproduce
+      description: |
+        Steps, if you can. If it involves a particular club or competition,
+        say which — several bugs here only appear for certain teams.
+      placeholder: |
+        1. Set the team to ...
+        2. Wait for ...
+        3. The Next screen shows ...
+
+  - type: input
+    id: team
+    attributes:
+      label: Club and competition
+      description: Team ids and competition code, if the problem may be data-related.
+      placeholder: "football-data 65, api-sports 50, competition PL"
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Serial log
+      description: |
+        From `pio device monitor`, or any serial terminal at 115200 baud.
+        A minute either side of the problem is usually plenty.
+      render: text
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else
+      description: Screenshots of the Status or Cache pages are often revealing.
