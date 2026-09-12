@@ -156,17 +156,56 @@ python3 tools/update_changelog.py 0.2.0 /tmp/changes.md --dry-run
 It declines to record a pre-release, and declines to add a version twice, so
 re-running a release is safe.
 
-## Branch protection
+## Making a failing build block a merge
 
-CI builds every pull request as a job named **`firmware`**. To make a failing
-build actually block a merge rather than just show a red cross, add a branch
-protection rule on `main`:
+CI builds every pull request as a job named **`firmware`**. By default a
+failure only shows a red cross — the merge button still works. To make it
+actually block, add a rule. GitHub offers two ways; either is fine.
 
-1. **Settings → Branches → Add branch protection rule**
-2. Branch name pattern: `main`
-3. Tick **Require status checks to pass before merging**
-4. Search for and select **`firmware`**
-5. Tick **Require branches to be up to date before merging**
+> **Do this after at least one build has run.** A status check only appears in
+> the picker once GitHub has seen it, so on a repository where CI has never
+> run the box will be empty and the name cannot be typed in. This repository
+> has already built, so `firmware` is selectable now.
+
+### Option A — Rulesets (the current mechanism)
+
+1. Repository **Settings**
+2. Left sidebar, under *Code and automation* → **Rules** → **Rulesets**
+3. **New ruleset** → **New branch ruleset**
+4. **Ruleset name**: anything, e.g. `main protection`
+5. **Enforcement status**: switch from *Disabled* to **Active** — a new
+   ruleset is created disabled, and leaving it that way is the most common
+   reason a rule appears to do nothing
+6. Under **Target branches** → **Add target** → *Include default branch*
+7. Tick **Require status checks to pass**
+8. Under it, **Add checks** → search `firmware` → select it
+9. Optionally tick **Require branches to be up to date before merging**
+10. **Create**
+
+**Note on bypass.** The *Bypass list* is empty by default, so the rule applies
+to you as owner too. If you would rather keep pushing straight to `main`
+yourself, add **Repository admin** to the bypass list — the rule then still
+governs pull requests from anyone else.
+
+### Option B — Classic branch protection
+
+1. Repository **Settings**
+2. Left sidebar, under *Code, planning, and automation* → **Branches**
+3. Under *Branch protection rules* → **Add classic branch protection rule**
+4. **Branch name pattern**: `main`
+5. Tick **Require status checks to pass before merging**
+6. In the search box that appears, find and select **`firmware`**
+7. Optionally tick **Require branches to be up to date before merging**
+8. To hold yourself to it as well, tick **Do not allow bypassing the above
+   settings** — otherwise admins are exempt
+9. **Create**
+
+### What this does and does not do
+
+Requiring a status check blocks *merging a pull request* whose build failed.
+It does not stop a direct push to `main` unless you also require pull
+requests — worth knowing, since this project has been developed by pushing
+directly to `main`.
 
 The build also compiles the development shims
 (`SIMULATE_LIVE_MATCH`, `MARQUEE_SQUEEZE`), because nothing else would: they

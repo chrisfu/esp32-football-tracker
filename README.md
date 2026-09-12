@@ -309,8 +309,9 @@ Contributions are welcome, including bug reports, which are just as useful.
    trade-offs and rejected alternatives; please match that.
 5. **Test on hardware.** This project talks to real APIs and a real panel, and
    several bugs here were invisible until the firmware ran on a board.
-6. **Open a pull request.** CI builds every push; a failing build blocks the
-   merge.
+6. **Open a pull request.** CI builds every push and pull request as a job
+   named `firmware`; a failing build blocks the merge. Setting that up is
+   described in [docs/RELEASING.md](docs/RELEASING.md).
 
 There is no formal style guide beyond matching what is there: Google-ish C++,
 two-space indent, 80 columns.
