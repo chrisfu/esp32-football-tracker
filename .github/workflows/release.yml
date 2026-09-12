@@ -64,8 +64,13 @@ jobs:
           # The previous stable tag, for the change list. Pre-releases are
           # excluded so a release lists everything since the last release
           # people actually received.
-          PREV=$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname \
-                 | grep -vE -- '-' | grep -v "^${TAG}$" | head -1)
+          # Matched positively rather than by excluding a dash. `grep -vE -- '-'`
+          # relies on `--` ending option parsing, which not every grep handles
+          # alike, and a mis-parse here silently produces the wrong commit
+          # range and therefore the wrong release notes.
+          PREV=$(git tag -l --sort=-v:refname \
+                 | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
+                 | grep -v "^${TAG}$" | head -1)
 
           echo "tag=$TAG"         >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
