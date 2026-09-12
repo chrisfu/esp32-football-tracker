@@ -17,15 +17,19 @@ git push origin v0.2.0
    that misreports its own version would make OTA comparisons meaningless —
    devices would refuse a real update, or reinstall the same one forever — so
    the release fails rather than shipping it.
-3. Computes the SHA-256 and writes `firmware/manifest.json`.
-4. Publishes a GitHub Release with `firmware.bin` and the manifest attached.
-5. Commits the manifest to `main`, which is the stable URL devices poll.
+3. Computes the SHA-256 and writes `manifest.json`.
+4. Publishes a GitHub Release with the binary, its `.sha` sidecar and — for a
+   stable tag — the manifest attached.
+
+It commits nothing. The release is the distribution: devices poll
+`releases/latest/download/manifest.json`, which GitHub resolves to the newest
+release not marked as a pre-release.
 
 ## Stable releases and pre-releases
 
 **Only plain numbered releases are distributed over the air.**
 
-| Tag | Published as | In the manifest? | In the changelog? | Over the air? |
+| Tag | Published as | Manifest attached? | In the changelog? | Over the air? |
 |---|---|---|---|---|
 | `v0.2.0` | ✅ Stable, marked **Latest** | Yes | Yes | Yes |
 | `v0.2.0-rc1` | ⚠️ **Pre-release** | No | No | No |
@@ -38,7 +42,8 @@ it by accident.
 
 This is enforced in three independent places, deliberately:
 
-1. **The workflow** only updates the manifest for a stable tag.
+1. **The workflow** attaches a manifest only to a stable release, and
+   `releases/latest` skips pre-releases regardless.
 2. **`checkForUpdate()`** refuses a manifest advertising a pre-release, so a
    pipeline mistake or a hand-edited manifest cannot push a release candidate
    onto a device sitting on a shelf.
@@ -98,15 +103,21 @@ the commit succeeds, so a failed hash leaves the running firmware untouched —
 which is also why a 1.2 MB image needs no staging space on a 1.4 MB
 filesystem.
 
-Two URLs are involved, and both were chosen for their certificates:
+Both URLs now traverse the same hosts, so the manifest move needed no new
+certificate:
 
 | URL | Host | Root CA |
 |---|---|---|
-| Manifest | `raw.githubusercontent.com` | ISRG Root X1 |
+| Manifest | `github.com` → `objects.githubusercontent.com` | USERTrust ECC → ISRG Root X1 |
 | Binary | `github.com` → `objects.githubusercontent.com` | USERTrust ECC → ISRG Root X1 |
 
-All three roots are embedded (`tools/gen_root_certs.py`). The binary download
-redirects once, which the updater follows.
+The roots are embedded (`tools/gen_root_certs.py`). `raw.githubusercontent.com`
+is no longer used.
+
+Redirects matter here. The binary download redirects once. The manifest URL
+redirects **twice** — `releases/latest/download/<asset>` resolves first to the
+concrete tag, then to storage — so `kMaxRedirects` in `ota.cpp` is 3, which is
+two hops plus headroom rather than a number picked to look safe.
 
 ## Published binaries carry no API keys
 
@@ -134,7 +145,7 @@ one; upload exists because it works with no internet at all.
 |---|---|
 | `firmware-X.Y.Z.bin` | The firmware |
 | `firmware-X.Y.Z.bin.sha` | SHA-256 in `shasum -c` format |
-| `firmware/manifest.json` | What devices poll — **stable releases only** |
+| `manifest.json` | What devices poll — **stable releases only** |
 
 Release notes always carry a bullet list of the commit subjects since the
 previous *stable* tag. Pre-releases are excluded from that range, so a release
@@ -143,18 +154,22 @@ the last release candidate.
 
 ## The changelog
 
-`CHANGELOG.md` gains a dated section automatically on every stable release,
-built from the same commit subjects. `tools/update_changelog.py` does it, and
-is a script rather than an inline snippet so it can be run and checked outside
-CI:
+`CHANGELOG.md` is updated **in the pull request, before tagging** — not by CI.
+The workflow deliberately commits nothing, so the changelog is written the same
+way as everything else and goes through review with the change it describes:
 
 ```bash
-git log --no-merges --pretty=format:'- %s' v0.1.0..HEAD > /tmp/changes.md
-python3 tools/update_changelog.py 0.2.0 /tmp/changes.md --dry-run
+git log --no-merges --pretty=tformat:'- %s' v0.2.0..HEAD > /tmp/changes.md
+python3 tools/update_changelog.py 0.2.1 /tmp/changes.md --dry-run   # inspect
+python3 tools/update_changelog.py 0.2.1 /tmp/changes.md             # apply
 ```
 
-It declines to record a pre-release, and declines to add a version twice, so
-re-running a release is safe.
+Use `tformat`, not `format`: the latter omits the trailing newline after the
+last entry, which is exactly the sort of thing that reads fine and breaks a
+heredoc.
+
+The script declines to record a pre-release, and declines to add a version
+twice, so running it again is safe.
 
 ## Making a failing build block a merge
 
@@ -187,34 +202,21 @@ to you as owner too. If you would rather keep pushing straight to `main`
 yourself, add **Repository admin** to the bypass list — the rule then still
 governs pull requests from anyone else.
 
-**You almost certainly need a second bypass entry: GitHub Actions.** Cutting a
-stable release is not only publishing a GitHub release; the final step of
-`release.yml` commits `firmware/manifest.json`, `VERSION` and `CHANGELOG.md`
-back to `main`. That push is made by `github-actions[bot]`, which is *not* a
-repository admin, so a **Repository admin** bypass does not cover it. The
-commit also carries no status check of its own, so the rule refuses it.
+**The release workflow needs no bypass.** It publishes a GitHub release and
+nothing else — it never commits to `main` — so a ruleset requiring the
+`firmware` check does not obstruct it.
 
-The result is a release that looks almost fine and is quietly undeliverable:
-the binary, its `.sha` and `manifest.json` are all attached to the release, but
-`firmware/manifest.json` on `main` is the *only* thing devices poll, so without
-it nobody is ever offered the update. The workflow therefore fails that step
-loudly rather than reporting success.
+That is a deliberate change. The workflow used to push
+`firmware/manifest.json` to `main`, which is what devices polled. The ruleset
+refused that push: `github-actions[bot]` is not a repository admin, so a
+**Repository admin** bypass does not cover it, and its commit carries no status
+check of its own. GitHub also offers no **GitHub Actions** entry in the bypass
+list on this repository, so there was nothing to add. The result was v0.2.0 —
+a release that published cleanly, verified correctly, and reached no device at
+all, because the one file they read was never updated.
 
-To allow it:
-
-1. **Settings** → **Rules** → **Rulesets** → open your rule
-2. **Bypass list** → **Add bypass**
-3. Choose **GitHub Actions** (listed under *Apps*, not under *Roles*)
-4. **Save changes**
-
-If a release has already failed this way, the release itself is fine and does
-not need cutting again — only the manifest is missing. Add the bypass, then
-either re-run the failed job, or push the same files by hand from a checkout of
-the tagged commit.
-
-The classic rules in Option B need the equivalent treatment: a required status
-check applies to direct pushes as well as merges, and the bot has no way to
-satisfy one.
+Devices now poll an asset of the release itself, so publishing the release *is*
+distributing it. See **How a device updates itself** above.
 
 ### Option B — Classic branch protection
 
@@ -249,6 +251,8 @@ than a header left the default build broken while the flagged build passed.
       the *new* image to fit the other slot
 - [ ] `SPEC.md` roadmap updated
 - [ ] `README.md` still accurate
+- [ ] `CHANGELOG.md` updated for this version (`tools/update_changelog.py`),
+      committed in the pull request — CI does not write it
 - [ ] `git push --tags` is up to date — the previous tag must exist **on the
       remote**, not just locally. The release notes are built from
       `previous-tag..new-tag`, and the workflow only sees tags the runner can

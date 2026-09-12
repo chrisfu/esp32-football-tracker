@@ -24,10 +24,15 @@ const char* g_lastError = "";
 constexpr uint32_t kDownloadTimeoutMs = 180000;
 constexpr uint32_t kManifestTimeoutMs = 15000;
 
-/// Redirects to follow. GitHub release downloads redirect exactly once, from
-/// github.com to objects.githubusercontent.com; two is headroom, and a bound
-/// stops a redirect loop from hanging the device.
-constexpr uint8_t kMaxRedirects = 2;
+/// Redirects to follow.
+///
+/// A release download redirects once, from github.com to
+/// objects.githubusercontent.com. The manifest URL redirects *twice*, because
+/// "releases/latest/download/<asset>" resolves first to the concrete tag and
+/// then to storage — measured, not assumed. Three leaves one hop of headroom
+/// for GitHub adding another, while still bounding the walk so a redirect loop
+/// cannot hang the device.
+constexpr uint8_t kMaxRedirects = 3;
 
 /// Split a URL into host and path. Returns false for anything not https.
 bool parseUrl(const char* url, char* host, size_t hostLen, char* path,
