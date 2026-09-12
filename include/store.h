@@ -243,4 +243,24 @@ struct Quota {
 void loadQuota(Quota& out);
 bool saveQuota(const Quota& in);
 
+/**
+ * Crash-safe guard around the over-the-air update check.
+ *
+ * The check runs early on every boot, so anything that crashes inside it
+ * crashes again immediately after the reset it caused — which is exactly what
+ * a stack overflow in the updater did: a permanent reset loop that no amount
+ * of power-cycling clears, on a device whose only other controls are behind
+ * the very firmware that is crashing.
+ *
+ * So the attempt is recorded in NVS *before* it starts and cleared when it
+ * finishes, crash or no crash being the difference. If a boot finds the mark
+ * still set, the previous attempt did not return, and the automatic check is
+ * skipped rather than repeated. A manual check from the System page still
+ * works, because that is someone deciding to try again with a device they can
+ * see.
+ */
+bool otaCheckWasInterrupted();
+void markOtaCheckStarted();
+void markOtaCheckFinished();
+
 }  // namespace store

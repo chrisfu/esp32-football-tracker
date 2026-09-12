@@ -106,10 +106,14 @@ filesystem.
 Both URLs now traverse the same hosts, so the manifest move needed no new
 certificate:
 
-| URL | Host | Root CA |
-|---|---|---|
-| Manifest | `github.com` → `objects.githubusercontent.com` | USERTrust ECC → ISRG Root X1 |
-| Binary | `github.com` → `objects.githubusercontent.com` | USERTrust ECC → ISRG Root X1 |
+| URL | Hosts |
+|---|---|
+| Manifest | `github.com` → `release-assets.githubusercontent.com` |
+| Binary | `github.com` → `release-assets.githubusercontent.com` |
+
+Both were observed on hardware, in the serial log of a real update check — the
+asset host is `release-assets.githubusercontent.com`, not the
+`objects.githubusercontent.com` this table named until it was checked.
 
 The roots are embedded (`tools/gen_root_certs.py`). `raw.githubusercontent.com`
 is no longer used.

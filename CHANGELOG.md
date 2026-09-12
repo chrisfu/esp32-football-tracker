@@ -13,6 +13,8 @@ subjects clear is what keeps this file useful.
 
 ## [0.2.1] - 2026-09-12
 
+- fix: stop the over-the-air update check overflowing the fetch task's stack, which crashed the device and left it in a reset loop that survived power-cycling
+- fix: skip the automatic update check after one that did not finish, so a crash inside it can never boot-loop the device again
 - fix: show the device's real mDNS address on the Device info and How to use screens, instead of a fixed football.local that stopped resolving once hostnames gained a per-device suffix
 - fix: stop the release workflow dirtying the working tree before it builds, which stamped v0.2.0's binary as "0.2.0+dirty"
 - feat: default the OTA manifest URL, so a freshly flashed device checks for updates without being configured first
