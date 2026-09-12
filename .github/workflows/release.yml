@@ -147,10 +147,23 @@ jobs:
           # Commit subjects, as bullets. Merge commits are dropped because they
           # restate the branch they merged, and the branch's own commit already
           # says what changed.
-          git log --no-merges --pretty=format:'- %s' "$RANGE" > /tmp/changes.md || true
+          #
+          # tformat, not format. `--pretty=format:` omits the trailing newline
+          # after the final entry, which glues the heredoc delimiter onto the
+          # last commit subject:
+          #
+          #   - fix: some commit subjectCHANGES_EOF
+          #
+          # GitHub then never finds the delimiter and the step fails with an
+          # invalid format error that says nothing about newlines. tformat
+          # terminates every entry instead of separating them.
+          git log --no-merges --pretty=tformat:'- %s' "$RANGE" > /tmp/changes.md || true
           if [ ! -s /tmp/changes.md ]; then
-            echo "- No changes recorded" > /tmp/changes.md
+            printf -- '- No changes recorded\n' > /tmp/changes.md
           fi
+          # Belt and braces: guarantee a final newline whatever produced the
+          # file, since the failure mode is silent and confusing.
+          [ -n "$(tail -c1 /tmp/changes.md)" ] && printf '\n' >> /tmp/changes.md
 
           echo "Changes in $RANGE:"
           cat /tmp/changes.md
