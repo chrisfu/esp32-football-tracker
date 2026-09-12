@@ -22,3 +22,11 @@ credentials.json
 
 # macOS
 .DS_Store
+
+# Release scratch space. The release workflow assembles firmware-<v>.bin, its
+# .sha sidecar and manifest.json here before attaching them to the GitHub
+# release. None of it belongs in the repository: the manifest is an asset of
+# the release it describes, not a file tracked on main.
+firmware/
+firmware-*.bin
+firmware-*.bin.sha

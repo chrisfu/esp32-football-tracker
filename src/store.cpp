@@ -509,6 +509,36 @@ bool factoryReset() {
 // Quota
 // ---------------------------------------------------------------------------
 
+namespace {
+/// Key for the in-flight marker. Kept in the quota namespace rather than
+/// settings so that clearing settings does not clear it, and vice versa.
+constexpr const char* kOtaInFlight = "otaBusy";
+}  // namespace
+
+bool otaCheckWasInterrupted() {
+  Preferences p;
+  if (!p.begin(kNsQuota, /*readOnly=*/true)) return false;
+  const bool busy = p.getBool(kOtaInFlight, false);
+  p.end();
+  return busy;
+}
+
+void markOtaCheckStarted() {
+  Preferences p;
+  if (!p.begin(kNsQuota, /*readOnly=*/false)) return;
+  p.putBool(kOtaInFlight, true);
+  p.end();
+}
+
+void markOtaCheckFinished() {
+  Preferences p;
+  if (!p.begin(kNsQuota, /*readOnly=*/false)) return;
+  // Removed rather than set false, so the key does not linger once the
+  // situation it describes is over.
+  p.remove(kOtaInFlight);
+  p.end();
+}
+
 void loadQuota(Quota& out) {
   Preferences p;
   if (!p.begin(kNsQuota, /*readOnly=*/true)) return;

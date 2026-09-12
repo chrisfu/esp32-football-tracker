@@ -78,7 +78,26 @@ jobs:
           echo "prev=$PREV"       >> "$GITHUB_OUTPUT"
           echo "Tag $TAG -> version $VERSION (stable: $STABLE, previous: ${PREV:-none})"
 
-          echo "$VERSION" > VERSION
+      # VERSION is deliberately NOT written here. It is only a fallback for
+      # builds with no git metadata, and the runner has full history, so
+      # writing it buys nothing — while editing a tracked file before the build
+      # makes `git describe --dirty` report "-dirty". That is how v0.2.0 came
+      # to publish a binary whose build slug read "0.2.0+dirty". The manifest
+      # step later writes it on main, which is where it belongs.
+
+      - name: Refuse to build a dirty tree
+        # The build stamps itself from `git describe --dirty`, so anything
+        # that edits a tracked file before this point silently mislabels the
+        # artefact. Cheap to check, and the failure it prevents is invisible
+        # until someone reads the version on a device.
+        run: |
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "::error::working tree is not clean at build time; the"
+            echo "::error::firmware would be stamped +dirty. Offending paths:"
+            git status --porcelain
+            exit 1
+          fi
+          echo "clean: $(git describe --tags --dirty --always)"
 
       - name: Build
         run: pio run -e cyd
@@ -89,8 +108,27 @@ jobs:
         # same one forever. Better to fail the release than ship it.
         run: |
           EXPECTED="${{ steps.version.outputs.version }}"
-          if ! grep -qF "$EXPECTED" .pio/build/cyd/firmware.bin; then
+
+          # -a matters. Without it grep treats firmware.bin as binary, and the
+          # exit status for a match is not consistent between GNU grep (0, as
+          # the runner has) and BSD grep (1, as macOS has). A check that
+          # silently inverts depending on where it runs is worse than none, and
+          # this one is the last line of defence before a release ships.
+          if ! grep -aqF "$EXPECTED" .pio/build/cyd/firmware.bin; then
             echo "::error::firmware does not contain version string $EXPECTED"
+            exit 1
+          fi
+          # Belt and braces against the dirty-tree case above: a released
+          # binary must never carry a build slug saying it came from an edited
+          # working copy, which is what v0.2.0 shipped.
+          if grep -aqF "${EXPECTED}+dirty" .pio/build/cyd/firmware.bin; then
+            echo "::error::firmware is stamped ${EXPECTED}+dirty"
+            exit 1
+          fi
+          # The OTA default must survive into the image, or a freshly flashed
+          # device never looks for updates.
+          if ! grep -aqF "manifest.json" .pio/build/cyd/firmware.bin; then
+            echo "::error::firmware carries no OTA manifest URL"
             exit 1
           fi
           if [ "${{ steps.version.outputs.stable }}" = "true" ] \
@@ -248,57 +286,22 @@ jobs:
             | Size | ${{ steps.artefacts.outputs.size }} bytes |
             | SHA-256 | `${{ steps.artefacts.outputs.sha }}` |
 
-      - name: Update the manifest and changelog
-        # Stable releases only. A pre-release must not touch the manifest, or
-        # every device polling it would be offered a release candidate.
-        if: steps.version.outputs.stable == 'true'
-        run: |
-          VERSION="${{ steps.version.outputs.version }}"
-          git config user.name  "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git fetch origin main
-          git checkout main
-
-          # Regenerated on main so the committed copy matches what was just
-          # published. raw.githubusercontent.com serves this, which is why the
-          # device needs no redirect and no API call to check for updates.
-          mkdir -p firmware
-          cat > firmware/manifest.json <<JSON
-          {
-            "version": "$VERSION",
-            "url": "https://github.com/${GITHUB_REPOSITORY}/releases/download/${{ steps.version.outputs.tag }}/${{ steps.artefacts.outputs.bin }}",
-            "size": ${{ steps.artefacts.outputs.size }},
-            "sha256": "${{ steps.artefacts.outputs.sha }}",
-            "released": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          }
-          JSON
-          echo "$VERSION" > VERSION
-
-          python3 tools/update_changelog.py "$VERSION" /tmp/changes.md
-
-          git add firmware/manifest.json VERSION CHANGELOG.md
-          if git diff --cached --quiet; then
-            echo "nothing to commit"
-          else
-            # This push can be refused by a branch ruleset, because the bot is
-            # not a repository admin and its commit has no status check of its
-            # own. If it is, the release still exists but **no device will ever
-            # see it** — the manifest is the only thing they poll. That is a
-            # silent failure worth making loud, so the step fails rather than
-            # reporting success.
-            :
-            # [skip ci] so this does not start a build of its own: it
-            # changes only the manifest, VERSION and changelog, none of which
-            # affect the firmware.
-            git commit -m "chore: publish v${VERSION} [skip ci]"
-            if ! git push origin main; then
-              echo "::error::Could not push the manifest to main. Devices poll"
-              echo "::error::firmware/manifest.json, so without it this release"
-              echo "::error::is not distributed over the air."
-              echo "::error::Add the GitHub Actions app to the branch ruleset's"
-              echo "::error::bypass list (Settings > Rules > Rulesets > your"
-              echo "::error::rule > Bypass list > Add bypass > GitHub Actions),"
-              echo "::error::then re-run this workflow."
-              exit 1
-            fi
-          fi
+      # There is deliberately no step committing anything back to main.
+      #
+      # The manifest ships as an asset of the release itself, and devices poll
+      # "releases/latest/download/manifest.json", which GitHub resolves to the
+      # newest non-prerelease. So the release *is* the distribution, and the
+      # manifest cannot disagree with the binary it describes.
+      #
+      # This replaced a step that pushed firmware/manifest.json to main. That
+      # push was refused by the branch ruleset — github-actions[bot] is not a
+      # repository admin and its commit carries no status check — and GitHub
+      # offers no way to add Actions to that ruleset's bypass list on this
+      # repository. The result was a release that published cleanly and then
+      # reached nobody.
+      #
+      # CHANGELOG.md is now updated in the pull request *before* tagging, with
+      #   python3 tools/update_changelog.py <version> <changes file>
+      # which keeps this workflow read-only with respect to the repository and
+      # puts the changelog under review like everything else. See
+      # docs/RELEASING.md.

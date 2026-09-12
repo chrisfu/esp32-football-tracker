@@ -72,6 +72,29 @@ const char* apPassword();
 const char* portalUrl();
 
 /**
+ * The device's mDNS hostname, without the ".local" suffix.
+ *
+ * Unique per device: the base name with the last two bytes of the MAC, so two
+ * trackers on one network do not fight over the same name. Valid before a join
+ * too, where it is still the unsuffixed base.
+ */
+const char* hostname();
+
+/**
+ * The address of this device's own web interface, ready to show a human.
+ *
+ * In station mode this is "http://<hostname>.local". In access-point mode it
+ * is the portal address instead, because .local does not resolve there — the
+ * device is serving its own network and has no mDNS responder for clients to
+ * query.
+ *
+ * Anything displaying the web address must use this rather than composing one,
+ * which is what left the on-device settings advertising a fixed
+ * "football.local" that stopped resolving once names became unique.
+ */
+const char* webUrl();
+
+/**
  * Start an NTP sync.
  *
  * Time matters more here than it might seem: cache freshness, the fixture

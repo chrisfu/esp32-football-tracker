@@ -11,6 +11,9 @@
 #include <WiFiClientSecure.h>
 #include <mbedtls/sha256.h>
 
+#include <memory>  // unique_ptr, for keeping large buffers off the task stack
+#include <new>     // nothrow
+
 #include "assets_root_certs.h"
 
 namespace ota {
@@ -24,10 +27,23 @@ const char* g_lastError = "";
 constexpr uint32_t kDownloadTimeoutMs = 180000;
 constexpr uint32_t kManifestTimeoutMs = 15000;
 
-/// Redirects to follow. GitHub release downloads redirect exactly once, from
-/// github.com to objects.githubusercontent.com; two is headroom, and a bound
-/// stops a redirect loop from hanging the device.
-constexpr uint8_t kMaxRedirects = 2;
+/// Redirects to follow.
+///
+/// Measured on hardware, not assumed: "releases/latest/download/<asset>"
+/// resolves first to the concrete tag on github.com and then to
+/// release-assets.githubusercontent.com, so the manifest takes two hops. Three
+/// leaves one hop of headroom for GitHub adding another, while still bounding
+/// the walk so a redirect loop cannot hang the device.
+constexpr uint8_t kMaxRedirects = 3;
+
+/// Longest URL handled anywhere in the updater, redirect targets included.
+///
+/// GitHub redirects a release asset to pre-signed storage, and those URLs carry
+/// a query string of several hundred characters (expiry, key id, signature).
+/// 256 bytes truncated them into a request that could only 403, so this is
+/// sized for the real thing with room to spare rather than for the tidy URL
+/// that starts the walk.
+constexpr size_t kMaxUrlLen = 1024;
 
 /// Split a URL into host and path. Returns false for anything not https.
 bool parseUrl(const char* url, char* host, size_t hostLen, char* path,
@@ -77,12 +93,40 @@ bool readLine(WiFiClientSecure& client, char* out, size_t capacity,
  */
 bool openUrl(WiFiClientSecure& client, const char* url, uint32_t timeoutMs,
              size_t& contentLength, char* finalUrl, size_t finalUrlLen) {
-  char current[256];
-  snprintf(current, sizeof(current), "%s", url);
+  // All of this lives on the heap, not the stack.
+  //
+  // These buffers used to be locals, and together with the caller's frame and
+  // mbedTLS's own handshake usage they overflowed the 8 KB fetch task: the
+  // device panicked with "Stack canary watchpoint triggered (fetch)" and, as
+  // the update check re-runs on every boot, never got out of the resulting
+  // reset loop. The heap has hundreds of KB free; the task stack does not.
+  //
+  // They are also much larger than before. A GitHub release asset redirects to
+  // a pre-signed storage URL whose query string alone runs to several hundred
+  // characters, and the old 256-byte buffers silently truncated it into a URL
+  // that could only ever fail.
+  struct Scratch {
+    char current[kMaxUrlLen];
+    char location[kMaxUrlLen];
+    char host[128];
+    char path[kMaxUrlLen];
+    char line[768];
+  };
+  std::unique_ptr<Scratch> s(new (std::nothrow) Scratch());
+  if (!s) {
+    g_lastError = "out of memory";
+    return false;
+  }
+  char* const current = s->current;
+  char* const location = s->location;
+  char* const host = s->host;
+  char* const path = s->path;
+  char* const line = s->line;
+
+  snprintf(current, kMaxUrlLen, "%s", url);
 
   for (uint8_t hop = 0; hop <= kMaxRedirects; ++hop) {
-    char host[128], path[224];
-    if (!parseUrl(current, host, sizeof(host), path, sizeof(path))) {
+    if (!parseUrl(current, host, sizeof(s->host), path, kMaxUrlLen)) {
       g_lastError = "URL must be https";
       return false;
     }
@@ -102,22 +146,21 @@ bool openUrl(WiFiClientSecure& client, const char* url, uint32_t timeoutMs,
         path, host, currentVersion());
 
     const uint32_t deadline = millis() + timeoutMs;
-    char line[512];
-    if (!readLine(client, line, sizeof(line), deadline)) {
+    if (!readLine(client, line, sizeof(s->line), deadline)) {
       g_lastError = "no response";
       return false;
     }
     const char* sp = strchr(line, ' ');
     const int status = (sp != nullptr) ? atoi(sp + 1) : 0;
 
-    char location[256] = {0};
+    location[0] = '\0';
     contentLength = 0;
-    while (readLine(client, line, sizeof(line), deadline)) {
+    while (readLine(client, line, sizeof(s->line), deadline)) {
       if (line[0] == '\0') break;
       if (strncasecmp(line, "location:", 9) == 0) {
         const char* v = line + 9;
         while (*v == ' ') ++v;
-        snprintf(location, sizeof(location), "%s", v);
+        snprintf(location, kMaxUrlLen, "%s", v);
       } else if (strncasecmp(line, "content-length:", 15) == 0) {
         contentLength = static_cast<size_t>(atol(line + 15));
       }
@@ -125,7 +168,7 @@ bool openUrl(WiFiClientSecure& client, const char* url, uint32_t timeoutMs,
 
     if (status >= 300 && status < 400 && location[0] != '\0') {
       Serial.printf("[ota] redirect -> %.60s...\n", location);
-      snprintf(current, sizeof(current), "%s", location);
+      snprintf(current, kMaxUrlLen, "%s", location);
       continue;
     }
     if (status != 200) {
@@ -226,8 +269,17 @@ bool checkForUpdate(const char* manifestUrl, UpdateInfo& out) {
 
   // The manifest is tiny, so it is read whole rather than streamed. Bounded
   // regardless, so a wrong URL returning a large page cannot exhaust the heap.
+  //
+  // On the heap, not the stack: 2 KB of locals here sat underneath openUrl's
+  // frame and mbedTLS's handshake for the whole call, and that combination is
+  // what blew the fetch task's 8 KB stack.
   constexpr size_t kMaxManifest = 2048;
-  char buffer[kMaxManifest];
+  std::unique_ptr<char[]> owned(new (std::nothrow) char[kMaxManifest]);
+  if (!owned) {
+    g_lastError = "out of memory";
+    return false;
+  }
+  char* const buffer = owned.get();
   size_t got = 0;
   const uint32_t deadline = millis() + kManifestTimeoutMs;
   while (got < kMaxManifest - 1 && millis() < deadline) {
@@ -333,7 +385,18 @@ bool applyUpdate(const UpdateInfo& info, ProgressFn progress) {
   mbedtls_sha256_init(&sha);
   mbedtls_sha256_starts_ret(&sha, 0);  // 0 = SHA-256, not SHA-224.
 
-  uint8_t chunk[1024];
+  // Heap, for the same reason as the manifest buffer: this frame coexists with
+  // openUrl's and with mbedTLS's handshake, and applyUpdate runs on the same
+  // 8 KB fetch task that the check overflowed.
+  // Named, because `sizeof(chunk)` silently became sizeof(a pointer) the
+  // moment this stopped being an array.
+  constexpr size_t kChunkLen = 1024;
+  std::unique_ptr<uint8_t[]> chunkOwned(new (std::nothrow) uint8_t[kChunkLen]);
+  if (!chunkOwned) {
+    g_lastError = "out of memory";
+    return false;
+  }
+  uint8_t* const chunk = chunkOwned.get();
   size_t written = 0;
   uint8_t lastPercent = 255;
   const uint32_t deadline = millis() + kDownloadTimeoutMs;
@@ -345,7 +408,7 @@ bool applyUpdate(const UpdateInfo& info, ProgressFn progress) {
       vTaskDelay(1);
       continue;
     }
-    const size_t want = min(sizeof(chunk),
+    const size_t want = min(kChunkLen,
                             min(static_cast<size_t>(avail), total - written));
     const int n = client.read(chunk, want);
     if (n <= 0) continue;

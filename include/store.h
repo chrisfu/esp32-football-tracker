@@ -182,10 +182,23 @@ struct Settings {
 
   /// Where to look for firmware releases.
   ///
-  /// Deliberately configurable rather than compiled in: a fork should update
-  /// from its own releases, not from this repository's.
+  /// Configurable, and defaulted from OTA_MANIFEST_URL in platformio.ini so a
+  /// fork points at its own releases by editing one line rather than by
+  /// leaving every device unconfigured. A value stored in NVS always wins;
+  /// clearing the field in the web interface returns the device to this
+  /// default rather than switching updates off, which is what otaAutoCheck is
+  /// for.
   static constexpr uint8_t kUrlLen = 160;
-  char otaManifestUrl[kUrlLen] = {0};
+  // No silent fallback. Defaulting to "" when the flag is absent would compile
+  // and run perfectly while never checking for updates — a build configuration
+  // mistake that only shows up as a device that is quietly never offered one.
+  // Fail the build instead.
+#ifndef OTA_MANIFEST_URL
+#error "OTA_MANIFEST_URL is not defined -- see build_flags in platformio.ini"
+#endif
+  char otaManifestUrl[kUrlLen] = OTA_MANIFEST_URL;
+  static_assert(sizeof(OTA_MANIFEST_URL) <= kUrlLen,
+                "OTA_MANIFEST_URL does not fit otaManifestUrl");
   /// Check for updates automatically. Checking is harmless; *applying* always
   /// needs an explicit action, because silently replacing firmware someone is
   /// relying on is not a decision to make on their behalf.
@@ -229,5 +242,25 @@ struct Quota {
 
 void loadQuota(Quota& out);
 bool saveQuota(const Quota& in);
+
+/**
+ * Crash-safe guard around the over-the-air update check.
+ *
+ * The check runs early on every boot, so anything that crashes inside it
+ * crashes again immediately after the reset it caused — which is exactly what
+ * a stack overflow in the updater did: a permanent reset loop that no amount
+ * of power-cycling clears, on a device whose only other controls are behind
+ * the very firmware that is crashing.
+ *
+ * So the attempt is recorded in NVS *before* it starts and cleared when it
+ * finishes, crash or no crash being the difference. If a boot finds the mark
+ * still set, the previous attempt did not return, and the automatic check is
+ * skipped rather than repeated. A manual check from the System page still
+ * works, because that is someone deciding to try again with a device they can
+ * see.
+ */
+bool otaCheckWasInterrupted();
+void markOtaCheckStarted();
+void markOtaCheckFinished();
 
 }  // namespace store

@@ -7,6 +7,7 @@
 
 #include <Arduino.h>
 #include <stdio.h>
+#include <string.h>  // strncmp, trimming the scheme from the web address
 
 #include "board_config.h"
 #include "network.h"
@@ -117,6 +118,21 @@ void SettingsMenu::drawDeviceInfo(TFT_eSPI& tft) {
   struct Line { const char* label; const char* value; uint16_t colour; };
   char signalBuf[24], quotaBuf[24], heapBuf[24];
 
+  // The web address is read from the network layer rather than written out
+  // here: the hostname carries a per-device suffix, so any literal spelled in
+  // the UI is wrong on every device but the one it was written for.
+  //
+  // It is also the longest value on this page. The row is right-aligned
+  // against a left-hand label, so measure it and drop the scheme if it would
+  // otherwise run underneath — "football-ab12.local" is still an address
+  // someone can type, whereas an overlapped one is no use at all.
+  const char* url = net::webUrl();
+  const int16_t labelRight = 10 + tft.textWidth("API calls", 1) + 8;
+  if (tft.textWidth(url, 2) > board::kScreenWidth - 10 - labelRight &&
+      strncmp(url, "http://", 7) == 0) {
+    url += 7;
+  }
+
   store::Quota q;
   store::loadQuota(q);
   snprintf(signalBuf, sizeof(signalBuf), "%d dBm (%u%%)", st.rssi, st.quality);
@@ -128,7 +144,7 @@ void SettingsMenu::drawDeviceInfo(TFT_eSPI& tft) {
       {"Network",  st.ssid[0] != '\0' ? st.ssid : "not connected",
        st.ssid[0] != '\0' ? colour::kPrimary : colour::kLoss},
       {"Address",  st.ip[0] != '\0' ? st.ip : "-", colour::kOurTeam},
-      {"Web UI",   "http://football.local", colour::kAccent},
+      {"Web UI",   url, colour::kAccent},
       {"Signal",   signalBuf, colour::kPrimary},
       {"Team",     teamLabel(), colour::kPrimary},
       {"Clock",    st.timeSynced ? "synced" : "not synced",
@@ -188,7 +204,7 @@ void SettingsMenu::drawHowToUse(TFT_eSPI& tft) {
   tft.drawString("stays put. Settings that need typing live at",
                  board::kScreenWidth / 2, y + 14, 1);
   tft.setTextColor(colour::kAccent, colour::kBackground);
-  tft.drawString("http://football.local", board::kScreenWidth / 2, y + 24, 1);
+  tft.drawString(net::webUrl(), board::kScreenWidth / 2, y + 24, 1);
 
   buttonCount_ = 1;
   buttons_[0] = {board::kScreenHeight - kButtonHeight - 6, kButtonHeight,

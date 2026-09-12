@@ -114,6 +114,12 @@ volatile bool  g_updateBusy      = false;
 ota::UpdateInfo g_updateInfo;
 uint32_t       g_lastUpdateCheckAt = 0;
 
+/// Set at boot when NVS says the last update check never finished — meaning it
+/// took the device down with it. Automatic checks stay off until a manual one
+/// from the System page succeeds, which is the user deciding to try again.
+bool           g_otaCheckDisabled       = false;
+bool           g_otaCheckDisabledLogged = false;
+
 /// Automatic checks are daily. Firmware does not appear more often than that,
 /// and a device that phones home constantly is impolite.
 constexpr uint32_t kUpdateCheckIntervalS = 24 * 3600;
@@ -462,6 +468,10 @@ void fetchTask(void*) {
       g_updateRequested = false;
       g_updateBusy      = true;
       const bool apply  = g_updateApply;
+      // Someone asked for this one, so it runs even if a previous attempt
+      // crashed — but it is still marked, so a crash here disables only the
+      // *automatic* check rather than looping the device.
+      store::markOtaCheckStarted();
       if (ota::checkForUpdate(g_settings->otaManifestUrl, g_updateInfo)) {
         g_lastUpdateCheckAt = now;
         if (apply && g_updateInfo.available) {
@@ -471,6 +481,14 @@ void fetchTask(void*) {
       } else {
         Serial.printf("[ota] check failed: %s\n", ota::lastError());
         g_lastUpdateCheckAt = now;  // Back off rather than retrying at once.
+      }
+      store::markOtaCheckFinished();
+      // It came back, so whatever took the device down before is no longer
+      // happening: automatic checks can resume.
+      if (g_otaCheckDisabled) {
+        g_otaCheckDisabled       = false;
+        g_otaCheckDisabledLogged = false;
+        Serial.println("[ota] check completed; automatic checks re-enabled");
       }
       g_updateBusy = false;
       vTaskDelay(pdMS_TO_TICKS(500));
@@ -483,8 +501,24 @@ void fetchTask(void*) {
         g_settings->otaManifestUrl[0] != '\0' &&
         (g_lastUpdateCheckAt == 0 ||
          now - g_lastUpdateCheckAt >= kUpdateCheckIntervalS)) {
-      g_lastUpdateCheckAt = now;
-      ota::checkForUpdate(g_settings->otaManifestUrl, g_updateInfo);
+      // g_lastUpdateCheckAt lives in RAM, so it is 0 after every reset and
+      // this fires within seconds of each boot. That is fine when the check
+      // works and catastrophic when it does not, which is why the marker below
+      // is consulted first.
+      if (g_otaCheckDisabled) {
+        // Said once, not every pass.
+        if (!g_otaCheckDisabledLogged) {
+          g_otaCheckDisabledLogged = true;
+          Serial.println(
+              "[ota] a previous update check did not finish; automatic checks "
+              "are disabled until one is run from the System page");
+        }
+      } else {
+        g_lastUpdateCheckAt = now;
+        store::markOtaCheckStarted();
+        ota::checkForUpdate(g_settings->otaManifestUrl, g_updateInfo);
+        store::markOtaCheckFinished();
+      }
     }
 
     const bool fetched = runDue(now);
@@ -508,6 +542,16 @@ void fetchTask(void*) {
 void begin(const store::Settings& settings, const model::Snapshot& initial) {
   g_settings = &settings;
   g_staging  = initial;
+
+  // Before anything touches the network: did the last update check return?
+  // If not, it crashed, and repeating it on this boot would simply repeat the
+  // crash.
+  g_otaCheckDisabled = store::otaCheckWasInterrupted();
+  if (g_otaCheckDisabled) {
+    Serial.println(
+        "[ota] previous update check did not finish -- automatic checks are "
+        "off until one succeeds from the System page");
+  }
 
   api::begin(settings.apiSportsKey, settings.footballDataKey);
   providers::begin(settings);
@@ -544,7 +588,15 @@ void begin(const store::Settings& settings, const model::Snapshot& initial) {
   // Core 0 alongside the radio; the UI keeps core 1 to itself. 8 KB of stack
   // is generous, but TLS and the JSON parser both use a fair amount and a
   // stack overflow here would present as a mysterious reboot.
-  xTaskCreatePinnedToCore(fetchTask, "fetch", 8192, nullptr, 1, nullptr, 0);
+  // 12 KB, not 8 KB.
+  //
+  // 8 KB was already marginal — a TLS handshake plus mbedTLS certificate chain
+  // verification is several KB on its own — and the OTA check overflowed it
+  // outright ("Stack canary watchpoint triggered (fetch)"). The updater's big
+  // buffers have moved to the heap, which fixes that; this is the margin, since
+  // the task also runs the JSON fetches and RAM is the resource this board has
+  // plenty of (17% used).
+  xTaskCreatePinnedToCore(fetchTask, "fetch", 12288, nullptr, 1, nullptr, 0);
   Serial.println(F("[refresh] fetch task started on core 0"));
 }
 

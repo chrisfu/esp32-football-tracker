@@ -53,11 +53,15 @@ constexpr uint32_t kReconnectIntervalMs = 30000;
  * football.local, and which one answered was a race — the second device on
  * this network was reachable only by IP.
  *
- * The bare name is also registered, so a single-device setup still answers to
- * football.local.
+ * There is deliberately no bare-name fallback. ESP32 mDNS answers to exactly
+ * one hostname, so the unique name is the only name, and everything that shows
+ * the address reads it from webUrl() rather than assuming one.
  */
 constexpr const char* kHostnameBase = "football";
 char g_hostname[24] = "football";
+
+/// "http://football-ab12.local", built once when the link comes up.
+char g_webUrl[40] = "";
 
 /// Convert dBm to a rough percentage. Not linear in reality, but a scale
 /// people can read at a glance beats an accurate number they cannot.
@@ -154,11 +158,12 @@ bool joinNetwork(const store::Settings& settings) {
 
   if (MDNS.begin(g_hostname)) {
     MDNS.addService("http", "tcp", 80);
-    // Also answer to the bare name, so a single device stays reachable at the
-    // simple address. With two devices, whichever registers first wins that
-    // one and both remain reachable by their unique names.
-    MDNS.addService(kHostnameBase, "tcp", 80);
-    Serial.printf("[net] mDNS: http://%s.local\n", g_hostname);
+    // No second addService for the bare name. That call registers a *service
+    // type* ("_football._tcp"), not a hostname, so it never made football.local
+    // resolve — it only looked as though it had, while the on-device settings
+    // went on advertising an address that answered nowhere.
+    snprintf(g_webUrl, sizeof(g_webUrl), "http://%s.local", g_hostname);
+    Serial.printf("[net] mDNS: %s\n", g_webUrl);
   }
   return true;
 }
@@ -238,5 +243,17 @@ bool online() { return g_status.mode == Mode::Connected; }
 const char* apSsid() { return g_apSsid; }
 const char* apPassword() { return kApPassword; }
 const char* portalUrl() { return g_portalUrl; }
+
+const char* hostname() { return g_hostname; }
+
+const char* webUrl() {
+  // In AP mode the device is the network, so .local has no responder to ask;
+  // the portal address is the only one that works.
+  if (g_status.mode == Mode::AccessPoint) return g_portalUrl;
+  // Empty until mDNS starts — fall back to the IP, which is always true even
+  // if it is less friendly, and never show an address that cannot be reached.
+  if (g_webUrl[0] != '\0') return g_webUrl;
+  return g_status.ip[0] != '\0' ? g_status.ip : "not connected";
+}
 
 }  // namespace net
