@@ -262,6 +262,9 @@ jobs:
           if git diff --cached --quiet; then
             echo "nothing to commit"
           else
-            git commit -m "chore: publish v${VERSION}"
+            # [skip ci] so this does not start a build of its own: it
+            # changes only the manifest, VERSION and changelog, none of which
+            # affect the firmware.
+            git commit -m "chore: publish v${VERSION} [skip ci]"
             git push origin main
           fi

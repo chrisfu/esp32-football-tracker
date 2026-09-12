@@ -8,16 +8,20 @@ name: Build
 on:
   push:
     branches: [main]
-    paths-ignore:
-      # The release workflow commits these back to main; rebuilding for them
-      # would be a loop with nothing to check.
-      - 'firmware/manifest.json'
-      - 'CHANGELOG.md'
-      - 'VERSION'
-      - '**/*.md'
   pull_request:
     # Any branch, so a fork's pull request is built too.
   workflow_dispatch:
+
+# No paths-ignore filter here, deliberately.
+#
+# It looked like a tidy way to avoid rebuilding for the manifest and changelog
+# the release workflow commits back — but a path filter suppresses the workflow
+# entirely on a branch-creation push, because GitHub has no previous commit to
+# diff against and so cannot decide which paths changed. The first push to this
+# repository therefore built nothing at all.
+#
+# The release workflow marks its own commit with [skip ci] instead, which
+# achieves the same thing without the edge case.
 
 # A new push to a pull request cancels the previous run: only the latest
 # commit's result is meaningful, and a queue of stale builds delays it.
