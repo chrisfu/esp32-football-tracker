@@ -187,6 +187,35 @@ to you as owner too. If you would rather keep pushing straight to `main`
 yourself, add **Repository admin** to the bypass list — the rule then still
 governs pull requests from anyone else.
 
+**You almost certainly need a second bypass entry: GitHub Actions.** Cutting a
+stable release is not only publishing a GitHub release; the final step of
+`release.yml` commits `firmware/manifest.json`, `VERSION` and `CHANGELOG.md`
+back to `main`. That push is made by `github-actions[bot]`, which is *not* a
+repository admin, so a **Repository admin** bypass does not cover it. The
+commit also carries no status check of its own, so the rule refuses it.
+
+The result is a release that looks almost fine and is quietly undeliverable:
+the binary, its `.sha` and `manifest.json` are all attached to the release, but
+`firmware/manifest.json` on `main` is the *only* thing devices poll, so without
+it nobody is ever offered the update. The workflow therefore fails that step
+loudly rather than reporting success.
+
+To allow it:
+
+1. **Settings** → **Rules** → **Rulesets** → open your rule
+2. **Bypass list** → **Add bypass**
+3. Choose **GitHub Actions** (listed under *Apps*, not under *Roles*)
+4. **Save changes**
+
+If a release has already failed this way, the release itself is fine and does
+not need cutting again — only the manifest is missing. Add the bypass, then
+either re-run the failed job, or push the same files by hand from a checkout of
+the tagged commit.
+
+The classic rules in Option B need the equivalent treatment: a required status
+check applies to direct pushes as well as merges, and the bot has no way to
+satisfy one.
+
 ### Option B — Classic branch protection
 
 1. Repository **Settings**
@@ -220,3 +249,9 @@ than a header left the default build broken while the flagged build passed.
       the *new* image to fit the other slot
 - [ ] `SPEC.md` roadmap updated
 - [ ] `README.md` still accurate
+- [ ] `git push --tags` is up to date — the previous tag must exist **on the
+      remote**, not just locally. The release notes are built from
+      `previous-tag..new-tag`, and the workflow only sees tags the runner can
+      fetch. A previous tag left unpushed makes that range resolve to the whole
+      history, and the notes then list every commit since the repository was
+      created. Harmless, but it looks careless and cannot be fixed by re-running
