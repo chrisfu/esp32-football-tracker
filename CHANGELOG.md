@@ -11,6 +11,11 @@ subjects clear is what keeps this file useful.
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-09-12
+
+- fix: stop truncating the signed redirect URL when following a release download — the 768-byte header buffer cut GitHub's ~910-character asset URL at 757, mid-signature, and a truncated redirect is now refused rather than followed
+- fix: clear the update-check marker as soon as the check returns, so a successful over-the-air install no longer looks like a crash and disables automatic checks on the new firmware's first boot
+
 ## [0.2.1] - 2026-09-12
 
 - fix: stop the over-the-air update check overflowing the fetch task's stack, which crashed the device and left it in a reset loop that survived power-cycling

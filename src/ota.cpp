@@ -63,8 +63,14 @@ bool parseUrl(const char* url, char* host, size_t hostLen, char* path,
 }
 
 /// Read one header line. Returns false at the end of the headers or on error.
+///
+/// @param truncated set when the line did not fit and characters were dropped.
+///        Silently returning a shortened line is how a signed redirect URL got
+///        cut mid-signature and sent anyway — it happened to be accepted, which
+///        is worse than failing, because it works until one day it does not.
 bool readLine(WiFiClientSecure& client, char* out, size_t capacity,
-              uint32_t deadline) {
+              uint32_t deadline, bool* truncated = nullptr) {
+  if (truncated != nullptr) *truncated = false;
   size_t len = 0;
   while (millis() < deadline) {
     if (!client.available()) {
@@ -79,7 +85,11 @@ bool readLine(WiFiClientSecure& client, char* out, size_t capacity,
       out[len] = '\0';
       return true;
     }
-    if (len < capacity - 1) out[len++] = static_cast<char>(c);
+    if (len < capacity - 1) {
+      out[len++] = static_cast<char>(c);
+    } else if (truncated != nullptr) {
+      *truncated = true;
+    }
   }
   return false;
 }
@@ -110,7 +120,10 @@ bool openUrl(WiFiClientSecure& client, const char* url, uint32_t timeoutMs,
     char location[kMaxUrlLen];
     char host[128];
     char path[kMaxUrlLen];
-    char line[768];
+    // Big enough for the longest header this parses, which is Location: a
+    // signed asset URL of ~910 characters plus the header name. 768 was not,
+    // and cut the URL at 757 — mid-signature.
+    char line[kMaxUrlLen + 64];
   };
   std::unique_ptr<Scratch> s(new (std::nothrow) Scratch());
   if (!s) {
@@ -155,15 +168,29 @@ bool openUrl(WiFiClientSecure& client, const char* url, uint32_t timeoutMs,
 
     location[0] = '\0';
     contentLength = 0;
-    while (readLine(client, line, sizeof(s->line), deadline)) {
+    bool lineTruncated = false;
+    bool locationTruncated = false;
+    while (readLine(client, line, sizeof(s->line), deadline, &lineTruncated)) {
       if (line[0] == '\0') break;
       if (strncasecmp(line, "location:", 9) == 0) {
         const char* v = line + 9;
         while (*v == ' ') ++v;
+        // snprintf below would truncate too. Either way, a redirect URL
+        // missing its tail must not be requested: GitHub's signed asset URLs
+        // tolerated it by luck, and luck is not a mechanism.
+        if (lineTruncated || strlen(v) >= kMaxUrlLen) locationTruncated = true;
         snprintf(location, kMaxUrlLen, "%s", v);
       } else if (strncasecmp(line, "content-length:", 15) == 0) {
         contentLength = static_cast<size_t>(atol(line + 15));
       }
+    }
+
+    if (locationTruncated) {
+      g_lastError = "redirect URL too long";
+      Serial.println("[ota] redirect URL did not fit; refusing to follow a "
+                     "truncated one");
+      client.stop();
+      return false;
     }
 
     if (status >= 300 && status < 400 && location[0] != '\0') {
