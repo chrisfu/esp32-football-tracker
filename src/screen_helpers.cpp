@@ -138,7 +138,16 @@ void formatCountdown(uint32_t utcSeconds, char* out, size_t len) {
   const int32_t remaining =
       static_cast<int32_t>(utcSeconds) - static_cast<int32_t>(nowT);
   if (remaining <= 0) {
-    snprintf(out, len, "kicking off");
+    // A kick-off in the past means this screen is showing a match that has
+    // started — which the fixture refresh now corrects, but the wording still
+    // has to be honest in the interim rather than claiming it is about to
+    // begin. "Kicking off" 45 minutes into a match reads as a stuck display.
+    const int32_t since = -remaining;
+    if (since < 4 * 3600) {
+      snprintf(out, len, "Under way");
+    } else {
+      snprintf(out, len, "Kick-off passed");
+    }
     return;
   }
 

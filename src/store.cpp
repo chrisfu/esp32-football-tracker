@@ -431,6 +431,8 @@ void loadSettings(Settings& out) {
 
   out.apiSportsTeamId    = p.getUShort("apisTeam", out.apiSportsTeamId);
   out.footballDataTeamId = p.getUShort("fdTeam", out.footballDataTeamId);
+  out.freeRefreshMinutes = p.getUShort("freeMin", out.freeRefreshMinutes);
+  out.livePollSeconds    = p.getUShort("liveSec", out.livePollSeconds);
   out.screenDwellMs      = p.getULong("dwell", out.screenDwellMs);
   out.brightness         = p.getUChar("bright", out.brightness);
   out.autoBrightness     = p.getBool("autoBright", out.autoBrightness);
@@ -467,6 +469,8 @@ bool saveSettings(const Settings& in) {
   p.putString("teamName", in.teamDisplayName);
   p.putUShort("apisTeam", in.apiSportsTeamId);
   p.putUShort("fdTeam", in.footballDataTeamId);
+  p.putUShort("freeMin", in.freeRefreshMinutes);
+  p.putUShort("liveSec", in.livePollSeconds);
   p.putULong("dwell", in.screenDwellMs);
   p.putUChar("bright", in.brightness);
   p.putBool("autoBright", in.autoBrightness);

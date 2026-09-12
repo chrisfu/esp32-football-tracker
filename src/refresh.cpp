@@ -40,18 +40,31 @@ constexpr uint32_t kMatchesIntervalS   = 6 * 3600;
 constexpr uint32_t kFixtureIntervalS   = 12 * 3600;
 constexpr uint32_t kScorersIntervalS   = 24 * 3600;
 
-/// How long before kick-off to start watching for the match to begin, and how
-/// long after to keep watching. Three hours covers a delayed start plus a full
-/// match and a generous stoppage period.
-constexpr uint32_t kLiveWindowBeforeS = 15 * 60;
-constexpr uint32_t kLiveWindowAfterS  = 3 * 3600;
+/// The window in which a match might be under way. Opens shortly before the
+/// scheduled kick-off and stays open long enough to cover a delayed start,
+/// a full match and extra time.
+constexpr uint32_t kLiveWindowBeforeS = 5 * 60;
+constexpr uint32_t kLiveWindowAfterS  = 4 * 3600;
 
-// Adaptive live polling (SPEC.md §6). Tighter when the match is likely to
-// change, slack when it is not, so a 2-hour match does not consume the day.
-constexpr uint32_t kLivePollQuietS   = 180;  ///< In play, nothing recent.
-constexpr uint32_t kLivePollActiveS  = 90;   ///< Just after a goal, or late on.
+// Live polling.
+//
+// A club plays once or twice a week and never twice in a day, so a match is
+// the one time spending quota is plainly worth it. The in-play interval is a
+// setting; these are the cases that deviate from it.
+//
+// The waiting-for-kick-off interval matters more than it looks: it decides how
+// long after the whistle the screen notices. It was 5 minutes, which combined
+// with a window opening 15 minutes early meant a match could be a good while
+// old before appearing. 60 seconds catches it within a minute of kick-off,
+// and only for the short stretch around the scheduled time.
+constexpr uint32_t kLivePollPreKickS = 60;
+constexpr uint32_t kLivePollActiveS  = 120;  ///< After a goal, or late on.
 constexpr uint32_t kLivePollPausedS  = 600;  ///< Half time: nothing happens.
-constexpr uint32_t kLivePollPreKickS = 300;  ///< Waiting for kick-off.
+
+/// After a match finishes, everything derived from it is stale: the table, the
+/// scorers, our record, and the next fixture. Refreshed once, shortly after,
+/// rather than waiting hours for their own intervals to come round.
+constexpr uint32_t kPostMatchDelayS = 5 * 60;
 
 struct Task {
   const char* name;
@@ -117,6 +130,12 @@ void onUpdateProgress(uint8_t percent) {
 uint32_t g_lastLiveFetchAt = 0;
 uint32_t g_lastGoalSeenAt  = 0;
 uint8_t  g_lastGoalTotal   = 0;
+/// Set when a match is seen to end, so the post-match refresh can be timed.
+uint32_t g_postMatchDueAt  = 0;
+/// Tracks the live flag between passes, to spot the transitions.
+bool     g_wasLive         = false;
+/// Reported once per dry spell, so a silent stop is never a mystery.
+bool     g_quotaWarned     = false;
 
 uint32_t nowUtc() {
   const time_t t = time(nullptr);
@@ -133,24 +152,38 @@ bool inLiveWindow(const model::Snapshot& s, uint32_t now) {
   // A match already known to be live keeps the window open regardless of the
   // scheduled time, which covers a kick-off delayed beyond our estimate.
   if (s.liveActive) return true;
-  if (!s.nextFixture.valid || s.nextFixture.kickoffUtc == 0) return false;
-  const uint32_t ko = s.nextFixture.kickoffUtc;
-  return now + kLiveWindowBeforeS >= ko && now <= ko + kLiveWindowAfterS;
+
+  // Either the next fixture or the last result can open the window. The last
+  // result matters because once a match kicks off, the fixture list moves on
+  // to the following game — so relying on nextFixture alone would close the
+  // window on the very match being played.
+  const uint32_t candidates[2] = {
+      s.nextFixture.valid ? s.nextFixture.kickoffUtc : 0,
+      s.lastResult.valid ? s.lastResult.kickoffUtc : 0,
+  };
+  for (uint32_t ko : candidates) {
+    if (ko == 0) continue;
+    if (now + kLiveWindowBeforeS >= ko && now <= ko + kLiveWindowAfterS) {
+      return true;
+    }
+  }
+  return false;
 }
 
 /// How long to wait before the next live poll, given the current state.
-uint32_t livePollInterval(const model::Snapshot& s, uint32_t now) {
+uint32_t livePollInterval(const model::Snapshot& s, uint32_t now,
+                          const store::Settings& settings) {
   if (!s.liveActive) return kLivePollPreKickS;
   if (s.live.fixture.state == model::MatchState::Paused) {
     return kLivePollPausedS;
   }
   // Tighten just after a goal — VAR can reverse one — and for the closing
   // stages, where matches are decided.
-  if (g_lastGoalSeenAt != 0 && now - g_lastGoalSeenAt < 180) {
+  if (g_lastGoalSeenAt != 0 && now - g_lastGoalSeenAt < 300) {
     return kLivePollActiveS;
   }
   if (s.live.minute >= 80) return kLivePollActiveS;
-  return kLivePollQuietS;
+  return settings.livePollSeconds > 0 ? settings.livePollSeconds : 300;
 }
 
 /// Note goals so polling can tighten after one.
@@ -249,17 +282,14 @@ bool runDue(uint32_t now) {
   // Live first: it is the most time-sensitive thing we do, and during a match
   // it is the only thing that matters.
   //
-  // Skipped entirely in a simulated build. Not just to preserve the fake
-  // fixture — though it does that, and the earlier guard further down was not
-  // enough on its own, because the fetch clears liveActive itself — but
-  // because the simulation would otherwise *invite* the fetch: inLiveWindow()
-  // is true precisely when liveActive is set, so a simulated match caused a
-  // real 57 KB request that spent quota and then deleted the thing being
-  // tested.
+  // Skipped entirely in a simulated build — not just to preserve the fake
+  // fixture, but because the simulation would otherwise invite the fetch:
+  // inLiveWindow() is true precisely when liveActive is set.
   if (SIMULATE_LIVE_MATCH == 0 && inLiveWindow(g_staging, now)) {
-    const uint32_t interval = livePollInterval(g_staging, now);
+    const uint32_t interval = livePollInterval(g_staging, now, *g_settings);
     if (g_lastLiveFetchAt == 0 || now - g_lastLiveFetchAt >= interval) {
       if (api::canAfford(api::Provider::ApiSports)) {
+        g_quotaWarned = false;
         const api::Result r = providers::fetchLiveMatch(g_staging);
         if (r == api::Result::Ok) {
           g_lastLiveFetchAt = now;
@@ -270,15 +300,68 @@ bool runDue(uint32_t now) {
           // Back off on failure so a persistent error cannot spin.
           g_lastLiveFetchAt = now;
         }
+      } else if (api::cooldownRemaining(api::Provider::ApiSports) > 0) {
+        // Just the minimum spacing between calls, which passes in seconds.
+        // Distinguished from a real shortage because reporting it as one was
+        // actively misleading: the first version of this message announced
+        // "quota paused" at 13 of 100 used.
+      } else {
+        // Said out loud, once per dry spell. This used to do nothing at all,
+        // silently: when the daily allowance ran out mid-match the screen
+        // simply froze on whatever minute it had last seen, with nothing
+        // anywhere saying why. A frozen clock that explains itself is a far
+        // better failure than one that does not.
+        if (!g_quotaWarned) {
+          g_quotaWarned = true;
+          store::Quota q;
+          store::loadQuota(q);
+          Serial.printf(
+              "[refresh] live polling paused: api-sports %u of %u used today, "
+              "holding the last few back for a manual refresh\n",
+              q.used, q.limit);
+        }
+        g_lastLiveFetchAt = now;  // Do not re-check every pass.
       }
     }
-  } else if (g_staging.liveActive && SIMULATE_LIVE_MATCH == 0) {
-    // Outside the window with a stale live flag: the match is long over and
-    // the provider stopped reporting it. Clear it so the rotation returns to
-    // normal even if the final poll was missed.
-    //
-    // Skipped in a simulated build, which would otherwise clear the very
-    // fixture it exists to display.
+  }
+
+  // --- Match transitions --------------------------------------------------
+  //
+  // Both edges matter, and neither was handled before. A match starting means
+  // the fixture list is out of date, because "next" is now the match being
+  // played. A match ending means the table, the scorers, our record and the
+  // next fixture are all stale at once.
+  if (g_staging.liveActive && !g_wasLive) {
+    g_wasLive = true;
+    g_postMatchDueAt = 0;
+    Serial.println(F("[refresh] match under way; refreshing the fixture list"));
+    // Force the fixture task so Next advances past the match being played
+    // rather than continuing to show it.
+    for (Task& t : g_tasks) {
+      if (strcmp(t.name, "fixture") == 0) t.lastOkAt = 0;
+    }
+  } else if (!g_staging.liveActive && g_wasLive) {
+    g_wasLive = false;
+    g_postMatchDueAt = now + kPostMatchDelayS;
+    Serial.printf("[refresh] match over; full refresh due in %lus\n",
+                  (unsigned long)kPostMatchDelayS);
+  }
+
+  // The provider may also report the match as finished while still listing it.
+  if (g_staging.liveActive &&
+      g_staging.live.fixture.state == model::MatchState::Finished &&
+      g_postMatchDueAt == 0) {
+    g_postMatchDueAt = now + kPostMatchDelayS;
+    Serial.println(F("[refresh] full time reported; refresh scheduled"));
+  }
+
+  if (g_postMatchDueAt != 0 && now >= g_postMatchDueAt) {
+    g_postMatchDueAt = 0;
+    Serial.println(F("[refresh] post-match refresh"));
+    for (Task& t : g_tasks) t.lastOkAt = 0;
+    // The match is finished, so stop treating it as live even if the last
+    // poll still listed it — otherwise the screen keeps a completed match on
+    // display indefinitely, which is exactly what it did.
     g_staging.liveActive = false;
     fetched = true;
   }
@@ -287,7 +370,13 @@ bool runDue(uint32_t now) {
   // rather than issued as a rapid series the provider would rate-limit.
   for (uint8_t i = 0; i < kTaskCount; ++i) {
     Task& t = g_tasks[i];
-    const bool due = (t.lastOkAt == 0) || (now - t.lastOkAt >= t.intervalS);
+    // football-data has no daily cap, so the interval is a setting rather
+    // than a per-task constant chosen to be frugal with something free.
+    const uint32_t intervalS =
+        (g_settings != nullptr && g_settings->freeRefreshMinutes > 0)
+            ? static_cast<uint32_t>(g_settings->freeRefreshMinutes) * 60
+            : t.intervalS;
+    const bool due = (t.lastOkAt == 0) || (now - t.lastOkAt >= intervalS);
     if (!due) continue;
     if (!api::canAfford(api::Provider::FootballData)) break;
 
@@ -299,7 +388,7 @@ bool runDue(uint32_t now) {
       Serial.printf("[refresh] %s: %s\n", t.name, api::resultName(r));
       // Do not hammer a failing endpoint: wait a short interval before
       // retrying by pretending it succeeded a while ago.
-      t.lastOkAt = now - t.intervalS + 300;
+      t.lastOkAt = now - intervalS + 300;
     }
     break;
   }
@@ -328,13 +417,17 @@ void seedScheduleFromCache(uint32_t now) {
     // a fetch indefinitely — possible if the clock was wrong when it was
     // written, or the device moved timezone-agnostic data between builds.
     if (st.fetchedAt > now) continue;
+    const uint32_t intervalS =
+        (g_settings != nullptr && g_settings->freeRefreshMinutes > 0)
+            ? static_cast<uint32_t>(g_settings->freeRefreshMinutes) * 60
+            : g_tasks[i].intervalS;
     const uint32_t age = now - st.fetchedAt;
-    if (age >= g_tasks[i].intervalS) continue;  // Genuinely due.
+    if (age >= intervalS) continue;  // Genuinely due.
 
     g_tasks[i].lastOkAt = st.fetchedAt;
     Serial.printf("[refresh] %s cached %lus ago; next in %lus\n",
                   g_tasks[i].name, (unsigned long)age,
-                  (unsigned long)(g_tasks[i].intervalS - age));
+                  (unsigned long)(intervalS - age));
   }
 }
 

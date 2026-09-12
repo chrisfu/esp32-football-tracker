@@ -45,8 +45,19 @@ constexpr uint32_t kJoinTimeoutMs = 15000;
 /// constantly would be expensive as well as futile.
 constexpr uint32_t kReconnectIntervalMs = 30000;
 
-/// mDNS hostname, so the device is reachable without hunting for its IP.
-constexpr const char* kHostname = "football";
+/**
+ * mDNS hostname, so the device is reachable without hunting for its IP.
+ *
+ * Suffixed with the MAC's last two bytes, exactly as the setup access point
+ * is. A fixed name meant two trackers on one network both claimed
+ * football.local, and which one answered was a race — the second device on
+ * this network was reachable only by IP.
+ *
+ * The bare name is also registered, so a single-device setup still answers to
+ * football.local.
+ */
+constexpr const char* kHostnameBase = "football";
+char g_hostname[24] = "football";
 
 /// Convert dBm to a rough percentage. Not linear in reality, but a scale
 /// people can read at a glance beats an accurate number they cannot.
@@ -111,7 +122,11 @@ bool startAccessPoint() {
 bool joinNetwork(const store::Settings& settings) {
   Serial.printf("[net] joining \"%s\"\n", settings.wifiSsid);
   WiFi.mode(WIFI_STA);
-  WiFi.setHostname(kHostname);
+  uint8_t mac[6] = {0};
+  WiFi.macAddress(mac);
+  snprintf(g_hostname, sizeof(g_hostname), "%s-%02x%02x", kHostnameBase,
+           mac[4], mac[5]);
+  WiFi.setHostname(g_hostname);
   // Persisting credentials in the radio's own NVS as well as ours would give
   // two sources of truth; ours is authoritative.
   WiFi.persistent(false);
@@ -137,9 +152,13 @@ bool joinNetwork(const store::Settings& settings) {
   Serial.printf("[net] connected: %s  %s  %d dBm (%u%%)\n", g_status.ssid,
                 g_status.ip, g_status.rssi, g_status.quality);
 
-  if (MDNS.begin(kHostname)) {
+  if (MDNS.begin(g_hostname)) {
     MDNS.addService("http", "tcp", 80);
-    Serial.printf("[net] mDNS: http://%s.local\n", kHostname);
+    // Also answer to the bare name, so a single device stays reachable at the
+    // simple address. With two devices, whichever registers first wins that
+    // one and both remain reachable by their unique names.
+    MDNS.addService(kHostnameBase, "tcp", 80);
+    Serial.printf("[net] mDNS: http://%s.local\n", g_hostname);
   }
   return true;
 }

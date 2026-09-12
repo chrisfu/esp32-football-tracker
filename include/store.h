@@ -156,6 +156,22 @@ struct Settings {
    */
   char teamDisplayName[24] = {0};
 
+  /**
+   * How often to refresh free-tier data, in minutes.
+   *
+   * football-data.org has no daily cap — only 10 requests a minute — so the
+   * original 6-to-24 hour intervals were needlessly frugal with something
+   * that costs nothing. Hourly keeps the table, scorers and fixtures current
+   * for about 100 requests a day against no limit at all.
+   */
+  uint16_t freeRefreshMinutes = 60;
+
+  /// Seconds between live-match polls while a match is in play.
+  ///
+  /// A club plays once or twice a week and never twice in a day, so a match
+  /// is the one time spending quota is obviously worthwhile.
+  uint16_t livePollSeconds = 300;
+
   uint32_t screenDwellMs = 12000;
   uint8_t  brightness    = 100;  ///< Percent.
   bool     autoBrightness = false;
