@@ -280,9 +280,25 @@ jobs:
           if git diff --cached --quiet; then
             echo "nothing to commit"
           else
+            # This push can be refused by a branch ruleset, because the bot is
+            # not a repository admin and its commit has no status check of its
+            # own. If it is, the release still exists but **no device will ever
+            # see it** — the manifest is the only thing they poll. That is a
+            # silent failure worth making loud, so the step fails rather than
+            # reporting success.
+            :
             # [skip ci] so this does not start a build of its own: it
             # changes only the manifest, VERSION and changelog, none of which
             # affect the firmware.
             git commit -m "chore: publish v${VERSION} [skip ci]"
-            git push origin main
+            if ! git push origin main; then
+              echo "::error::Could not push the manifest to main. Devices poll"
+              echo "::error::firmware/manifest.json, so without it this release"
+              echo "::error::is not distributed over the air."
+              echo "::error::Add the GitHub Actions app to the branch ruleset's"
+              echo "::error::bypass list (Settings > Rules > Rulesets > your"
+              echo "::error::rule > Bypass list > Add bypass > GitHub Actions),"
+              echo "::error::then re-run this workflow."
+              exit 1
+            fi
           fi
