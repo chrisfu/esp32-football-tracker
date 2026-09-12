@@ -11,6 +11,28 @@ subjects clear is what keeps this file useful.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-12
+
+- fix: fail loudly if the release manifest cannot be pushed to main
+- fix: terminate change-list entries so the release notes heredoc closes
+- fix: select the previous stable tag by positive match rather than excluding a dash
+- docs: correct the branch protection instructions for the current GitHub UI
+- fix: drop the path filter that suppressed CI on a branch-creation push
+- chore: add MIT licence, rewrite the README, and automate changelog and releases
+- fix: scope the live fetch to our team, rework match polling and schedule post-match refreshes
+- fix: identify the tracked club by provider id, widen competition names and version the cache schema
+- feat: link the provider docs from settings and list every club id from the cached table
+- fix: set football-data crest ids on the live fixture and clip event labels to their column
+- feat: half-size crests, newest-first scrollable events and missed-penalty marker on Live
+- fix: skip the live fetch when simulating, which was wiping the simulated match
+- fix: centre Live panel names on shared columns and stop sprite overspill
+- fix: align form chips with the club name above them
+- fix: size name columns from measurement, and scroll names that overflow
+- fix: centre each club's crest and name on a shared column
+- perf: idle power savings, and three optimisations measured then rejected
+- feat: on-device power instrumentation, and the savings it found
+- feat: only distribute stable releases over the air
+
 ## [0.1.0] - 2026-09-10
 
 First tagged release.

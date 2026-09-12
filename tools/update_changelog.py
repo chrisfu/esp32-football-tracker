@@ -48,7 +48,11 @@ def main() -> int:
         changes = "- No changes recorded"
 
     today = datetime.date.today().isoformat()
-    entry = f"{UNRELEASED}\n\n## [{args.version}] - {today}\n\n{changes}\n"
+    # No trailing newline after the bullets: the text this replacement pushes
+    # down already begins with the blank line that separated Unreleased from
+    # the section below it. Adding one here would leave two blank lines before
+    # every previous release, compounding with each release cut.
+    entry = f"{UNRELEASED}\n\n## [{args.version}] - {today}\n\n{changes}"
     updated = text.replace(UNRELEASED, entry, 1)
 
     if args.dry_run:
