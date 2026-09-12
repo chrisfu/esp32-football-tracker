@@ -585,7 +585,10 @@ void SeasonRecordScreen::draw(TFT_eSPI& tft, const model::Snapshot& d) {
                              : 0;
   const bool haveCrest = crest::draw(tft, ourId, 8, kContentTop + 2);
   tft.setTextDatum(haveCrest ? ML_DATUM : TC_DATUM);
-  tft.setTextColor(colour::kOurTeam, colour::kBackground);
+  // Plain white. The yellow highlight exists to pick our row out of a table
+  // of twenty other clubs; on a screen that shows nothing else, there is
+  // nothing to distinguish it from.
+  tft.setTextColor(colour::kPrimary, colour::kBackground);
   if (haveCrest) {
     tft.drawString(name, 8 + crest::kSize + 10, kContentTop + 26, 4);
   } else {

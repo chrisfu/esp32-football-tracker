@@ -366,6 +366,8 @@ void parseNextFixtureImpl(const JsonDocument& doc, model::Snapshot& out) {
       // football-data's, so this is the only point at which the two can be
       // associated.
       out.liveOpponentId = model::Snapshot::opponentOf(f);
+      setField(out.liveOpponentName,
+               f.weAreHome ? f.awayName : f.homeName);
       continue;
     }
     // Preserve any form already derived for our side.
@@ -540,10 +542,32 @@ api::Result fetchLiveMatch(model::Snapshot& out) {
   ev["team"]["id"]      = true;
   ev["player"]["name"]  = true;
 
+  // Scoped to our team, not every live fixture on earth.
+  //
+  // This asked for `live=all` and searched the result. At a quiet hour that
+  // is 12 fixtures and about 17 KB; on a Saturday afternoon it is **325
+  // fixtures and 531 KB**, which no amount of filtering will parse on a board
+  // with 110 KB of contiguous heap. The failure mode was quiet and awful: the
+  // parse returned NoMemory, the fetch reported an error, and the screen kept
+  // displaying whatever minute it had last managed to read — so a match
+  // appeared late, froze mid-way, and stayed on screen long after full time.
+  //
+  // The provider accepts a team filter alongside `live`, which reduces the
+  // response to the one fixture we care about.
+  char path[64];
+  snprintf(path, sizeof(path), "/fixtures?live=all&team=%u", apiSportsTeam());
+
   JsonDocument doc;
-  const api::Response r = api::fetch(api::Provider::ApiSports,
-                                     "/fixtures?live=all", doc, filter);
+  const api::Response r =
+      api::fetch(api::Provider::ApiSports, path, doc, filter);
   if (!r.ok()) return r.result;
+
+  // Worth knowing if this ever grows again: the whole design assumes a small
+  // response, and a large one is the shape of the bug that was just fixed.
+  if (r.bytesReceived > 32768) {
+    Serial.printf("[prov] live response unexpectedly large: %lu bytes\n",
+                  (unsigned long)r.bytesReceived);
+  }
 
   const uint16_t ourId = apiSportsTeam();
   out.liveActive = false;
@@ -556,8 +580,27 @@ api::Result fetchLiveMatch(model::Snapshot& out) {
     model::LiveMatch& m = out.live;
     m = model::LiveMatch{};
     model::Fixture& f = m.fixture;
-    setField(f.homeName, fxo["teams"]["home"]["name"] | "");
-    setField(f.awayName, fxo["teams"]["away"]["name"] | "");
+
+    // Prefer football-data's club names over api-sports', which abbreviates:
+    // "Bolton" rather than "Bolton Wanderers", "Cardiff" rather than "Cardiff
+    // City". Harmless for most clubs and actively ambiguous where two share a
+    // city. Ours comes from the league table, the opponent's from the fixture
+    // that was identified as having gone live; api-sports' name is the
+    // fallback when neither is known yet.
+    const model::TableRow* ourRow = out.ourTeam();
+    const bool weAreHomeSide = (homeId == ourId);
+    const char* ourName =
+        (ourRow != nullptr && ourRow->name[0] != '\0')
+            ? ourRow->name
+            : (weAreHomeSide ? (fxo["teams"]["home"]["name"] | "")
+                             : (fxo["teams"]["away"]["name"] | ""));
+    const char* oppName =
+        (out.liveOpponentName[0] != '\0')
+            ? out.liveOpponentName
+            : (weAreHomeSide ? (fxo["teams"]["away"]["name"] | "")
+                             : (fxo["teams"]["home"]["name"] | ""));
+    setField(f.homeName, weAreHomeSide ? ourName : oppName);
+    setField(f.awayName, weAreHomeSide ? oppName : ourName);
     setField(f.competition, fxo["league"]["name"] | "");
     f.kickoffUtc = parseIso8601(fxo["fixture"]["date"] | "");
     f.homeGoals  = fxo["goals"]["home"] | 0;

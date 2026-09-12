@@ -249,6 +249,16 @@ struct Snapshot {
    */
   uint16_t liveOpponentId = 0;
 
+  /**
+   * The live opponent's name as football-data spells it.
+   *
+   * Recorded alongside the id, because the live feed is api-sports and its
+   * club names are terser: it calls Bolton Wanderers "Bolton" and Cardiff
+   * City "Cardiff". Fine in isolation, ambiguous the moment two clubs share a
+   * city — "Manchester" would name either of them.
+   */
+  char liveOpponentName[kNameLen] = {0};
+
   char competitionName[kCompLen] = {0};
   /// Season's current matchday, for context on the table screen.
   uint8_t matchday = 0;

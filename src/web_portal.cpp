@@ -447,6 +447,23 @@ void handleSettings() {
             "Championship = ELC");
   sendChunk("</div>");
 
+  // --- Refresh cadence -------------------------------------------------
+  sendChunk("<div class=\"card\"><h2>How often to update</h2>"
+            "<p style=\"font-size:.85rem;color:#aaa\">football-data.org has "
+            "no daily limit, so table, fixtures and scorers can refresh "
+            "freely. api-sports allows 100 calls a day, and a live match is "
+            "the one thing worth spending them on — a club plays once or "
+            "twice a week and never twice in a day.</p>");
+  snprintf(buf, sizeof(buf), "%u", c.freeRefreshMinutes);
+  textField("freemin", "Table, fixtures, scorers (minutes)", buf,
+            "5-720; free, so hourly is reasonable");
+  snprintf(buf, sizeof(buf), "%u", c.livePollSeconds);
+  textField("livesec", "Live match poll (seconds)", buf,
+            "30-900; costs api-sports quota");
+  sendChunk("<p style=\"font-size:.8rem;color:#777\">A refresh also runs "
+            "automatically five minutes after a match finishes, whatever "
+            "these are set to.</p></div>");
+
   // --- Screens ---------------------------------------------------------
   sendChunk("<div class=\"card\"><h2>Screens</h2>");
   snprintf(buf, sizeof(buf), "%lu", (unsigned long)(c.screenDwellMs / 1000));
@@ -564,6 +581,10 @@ void handleSettingsPost() {
   c.apiSportsTeamId =
       static_cast<uint16_t>(clampedArg("apiteam", 1, 65535,
                                        c.apiSportsTeamId));
+  c.freeRefreshMinutes = static_cast<uint16_t>(
+      clampedArg("freemin", 5, 720, c.freeRefreshMinutes));
+  c.livePollSeconds = static_cast<uint16_t>(
+      clampedArg("livesec", 30, 900, c.livePollSeconds));
   c.screenDwellMs = clampedArg("dwell", 1, 120, c.screenDwellMs / 1000) * 1000;
   c.brightness =
       static_cast<uint8_t>(clampedArg("bright", 10, 100, c.brightness));
