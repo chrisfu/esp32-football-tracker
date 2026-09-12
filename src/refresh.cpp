@@ -472,17 +472,23 @@ void fetchTask(void*) {
       // crashed — but it is still marked, so a crash here disables only the
       // *automatic* check rather than looping the device.
       store::markOtaCheckStarted();
-      if (ota::checkForUpdate(g_settings->otaManifestUrl, g_updateInfo)) {
-        g_lastUpdateCheckAt = now;
+      const bool checked =
+          ota::checkForUpdate(g_settings->otaManifestUrl, g_updateInfo);
+      // Cleared the moment the *check* returns, and deliberately before any
+      // install. applyUpdate reboots on success, so clearing it afterwards
+      // never happened — which made a successful over-the-air update look
+      // exactly like a crash, and switched automatic checks off on the very
+      // first boot of the new firmware. Observed doing precisely that.
+      store::markOtaCheckFinished();
+      g_lastUpdateCheckAt = now;  // Back off either way.
+      if (checked) {
         if (apply && g_updateInfo.available) {
           // Reboots on success, so nothing after this runs.
           ota::applyUpdate(g_updateInfo, onUpdateProgress);
         }
       } else {
         Serial.printf("[ota] check failed: %s\n", ota::lastError());
-        g_lastUpdateCheckAt = now;  // Back off rather than retrying at once.
       }
-      store::markOtaCheckFinished();
       // It came back, so whatever took the device down before is no longer
       // happening: automatic checks can resume.
       if (g_otaCheckDisabled) {
