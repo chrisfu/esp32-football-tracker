@@ -78,7 +78,26 @@ jobs:
           echo "prev=$PREV"       >> "$GITHUB_OUTPUT"
           echo "Tag $TAG -> version $VERSION (stable: $STABLE, previous: ${PREV:-none})"
 
-          echo "$VERSION" > VERSION
+      # VERSION is deliberately NOT written here. It is only a fallback for
+      # builds with no git metadata, and the runner has full history, so
+      # writing it buys nothing — while editing a tracked file before the build
+      # makes `git describe --dirty` report "-dirty". That is how v0.2.0 came
+      # to publish a binary whose build slug read "0.2.0+dirty". The manifest
+      # step later writes it on main, which is where it belongs.
+
+      - name: Refuse to build a dirty tree
+        # The build stamps itself from `git describe --dirty`, so anything
+        # that edits a tracked file before this point silently mislabels the
+        # artefact. Cheap to check, and the failure it prevents is invisible
+        # until someone reads the version on a device.
+        run: |
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "::error::working tree is not clean at build time; the"
+            echo "::error::firmware would be stamped +dirty. Offending paths:"
+            git status --porcelain
+            exit 1
+          fi
+          echo "clean: $(git describe --tags --dirty --always)"
 
       - name: Build
         run: pio run -e cyd
@@ -91,6 +110,13 @@ jobs:
           EXPECTED="${{ steps.version.outputs.version }}"
           if ! grep -qF "$EXPECTED" .pio/build/cyd/firmware.bin; then
             echo "::error::firmware does not contain version string $EXPECTED"
+            exit 1
+          fi
+          # Belt and braces against the dirty-tree case above: a released
+          # binary must never carry a build slug that says it came from an
+          # edited working copy.
+          if grep -qF "${EXPECTED}+dirty" .pio/build/cyd/firmware.bin; then
+            echo "::error::firmware is stamped ${EXPECTED}+dirty"
             exit 1
           fi
           if [ "${{ steps.version.outputs.stable }}" = "true" ] \
