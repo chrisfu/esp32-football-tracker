@@ -182,10 +182,23 @@ struct Settings {
 
   /// Where to look for firmware releases.
   ///
-  /// Deliberately configurable rather than compiled in: a fork should update
-  /// from its own releases, not from this repository's.
+  /// Configurable, and defaulted from OTA_MANIFEST_URL in platformio.ini so a
+  /// fork points at its own releases by editing one line rather than by
+  /// leaving every device unconfigured. A value stored in NVS always wins;
+  /// clearing the field in the web interface returns the device to this
+  /// default rather than switching updates off, which is what otaAutoCheck is
+  /// for.
   static constexpr uint8_t kUrlLen = 160;
-  char otaManifestUrl[kUrlLen] = {0};
+  // No silent fallback. Defaulting to "" when the flag is absent would compile
+  // and run perfectly while never checking for updates — a build configuration
+  // mistake that only shows up as a device that is quietly never offered one.
+  // Fail the build instead.
+#ifndef OTA_MANIFEST_URL
+#error "OTA_MANIFEST_URL is not defined -- see build_flags in platformio.ini"
+#endif
+  char otaManifestUrl[kUrlLen] = OTA_MANIFEST_URL;
+  static_assert(sizeof(OTA_MANIFEST_URL) <= kUrlLen,
+                "OTA_MANIFEST_URL does not fit otaManifestUrl");
   /// Check for updates automatically. Checking is harmless; *applying* always
   /// needs an explicit action, because silently replacing firmware someone is
   /// relying on is not a decision to make on their behalf.
