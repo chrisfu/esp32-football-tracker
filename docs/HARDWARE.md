@@ -23,7 +23,7 @@ are included so any future board can be re-checked the same way.
 **No PSRAM is the single most important constraint in this project.** We have only
 the ~320 KB of internal DRAM, of which roughly 160–200 KB is realistically free
 once Wi-Fi and TLS are up. Every design decision about JSON parsing, framebuffers
-and HTTP buffering in [SPEC.md](../SPEC.md) follows from this.
+and HTTP buffering in [SPEC.md](SPEC.md) follows from this.
 
 ```bash
 # Reproduce the silicon report
@@ -137,7 +137,7 @@ esptool --port /dev/cu.usbserial-2130 --baud 115200 read-flash 32768 3072 ptable
 1472 KB of filesystem is generous for our needs (cached JSON, Pure CSS, crests),
 so the plan is to **keep dual OTA slots** rather than reclaim app1 for storage —
 being able to roll back a bad firmware on a device with no debug header is worth
-more than the extra space. See [SPEC.md](../SPEC.md) for the final table.
+more than the extra space. See [SPEC.md](SPEC.md) for the final table.
 
 ## 5. Factory firmware
 
@@ -167,7 +167,7 @@ LVGL v8
 So the factory stack is **TFT_eSPI over LVGL 8.3.3, using SPI DMA** (`dmaWait` is
 only linked in when DMA is enabled). That is a useful signal: DMA-driven SPI to
 this panel is known-good on this exact board, which validates the rendering
-approach chosen in [SPEC.md](../SPEC.md).
+approach chosen in [SPEC.md](SPEC.md).
 
 ```bash
 esptool --port /dev/cu.usbserial-2130 --baud 115200 read-flash 65536 1310720 app0.bin
