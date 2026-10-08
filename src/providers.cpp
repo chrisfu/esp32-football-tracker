@@ -90,6 +90,20 @@ void readFixture(JsonObjectConst m, uint16_t ourId, model::Fixture& f) {
   f.valid = true;
 }
 
+/**
+ * Whether two kick-off times, one from each provider, are the same match.
+ *
+ * Kick-off is the only thing the providers have in common — their fixture
+ * and team ids are unrelated. A tolerance rather than equality, so a time
+ * corrected by one provider before the other still matches; two hours is
+ * far less than the gap between any club's matches.
+ */
+bool sameKickoff(uint32_t a, uint32_t b) {
+  if (a == 0 || b == 0) return false;
+  const uint32_t gap = a > b ? a - b : b - a;
+  return gap <= 2 * 3600;
+}
+
 /// Our result in a completed fixture: 'W', 'D' or 'L'.
 char resultChar(const model::Fixture& f) {
   const int8_t ours   = f.weAreHome ? f.homeGoals : f.awayGoals;
@@ -360,11 +374,14 @@ void parseNextFixtureImpl(const JsonDocument& doc, model::Snapshot& out) {
     // Skip the match being played, so Next never duplicates Live. Matched on
     // kick-off rather than id because the two providers number fixtures
     // differently and only the time is common to both.
-    if (liveKickoff != 0 && f.kickoffUtc == liveKickoff) {
-      // This is the match being played. Remember the opponent before moving
-      // on: the live feed is api-sports, whose team ids are unrelated to
-      // football-data's, so this is the only point at which the two can be
-      // associated.
+    //
+    // Rarely seen in practice: this request asks for scheduled matches, and
+    // once a match kicks off football-data lists it as IN_PLAY, so it drops
+    // out of the response. It still turns up in the minutes before the
+    // provider notices the kick-off. Asking for IN_PLAY as well is not the
+    // fix it looks like — a multi-status query comes back in a different
+    // order, and `limit=3` then returns fixtures from next April.
+    if (sameKickoff(f.kickoffUtc, liveKickoff)) {
       out.liveOpponentId = model::Snapshot::opponentOf(f);
       setField(out.liveOpponentName,
                f.weAreHome ? f.awayName : f.homeName);
@@ -571,6 +588,7 @@ api::Result fetchLiveMatch(model::Snapshot& out) {
 
   const uint16_t ourId = apiSportsTeam();
   out.liveActive = false;
+  const uint32_t prevLiveKickoff = out.live.fixture.kickoffUtc;
 
   for (JsonObjectConst fxo : doc["response"].as<JsonArrayConst>()) {
     const uint16_t homeId = fxo["teams"]["home"]["id"] | 0;
@@ -580,6 +598,29 @@ api::Result fetchLiveMatch(model::Snapshot& out) {
     model::LiveMatch& m = out.live;
     m = model::LiveMatch{};
     model::Fixture& f = m.fixture;
+    const uint32_t kickoff = parseIso8601(fxo["fixture"]["date"] | "");
+
+    // Which football-data club we are playing. The live feed cannot say — its
+    // ids are api-sports' — but until the fixture list is next refreshed, the
+    // next fixture *is* this match, kick-off and all.
+    //
+    // This used to rely on the fixture list alone, which was meant to spot
+    // the match among the upcoming ones. It never could: once a match kicks
+    // off, football-data stops listing it as scheduled, so it is no longer
+    // in that response. The opponent's id stayed 0, and with it went their
+    // crest and full name — Norwich showed neither, all match, despite both
+    // being on the Next panel minutes earlier.
+    if (out.nextFixture.valid &&
+        sameKickoff(out.nextFixture.kickoffUtc, kickoff)) {
+      const model::Fixture& n = out.nextFixture;
+      out.liveOpponentId = model::Snapshot::opponentOf(n);
+      setField(out.liveOpponentName, n.weAreHome ? n.awayName : n.homeName);
+    } else if (!sameKickoff(prevLiveKickoff, kickoff)) {
+      // Neither this match nor one already identified. Better no crest than
+      // the last opponent's.
+      out.liveOpponentId = 0;
+      out.liveOpponentName[0] = '\0';
+    }
 
     // Prefer football-data's club names over api-sports', which abbreviates:
     // "Bolton" rather than "Bolton Wanderers", "Cardiff" rather than "Cardiff
@@ -602,7 +643,7 @@ api::Result fetchLiveMatch(model::Snapshot& out) {
     setField(f.homeName, weAreHomeSide ? ourName : oppName);
     setField(f.awayName, weAreHomeSide ? oppName : ourName);
     setField(f.competition, fxo["league"]["name"] | "");
-    f.kickoffUtc = parseIso8601(fxo["fixture"]["date"] | "");
+    f.kickoffUtc = kickoff;
     f.homeGoals  = fxo["goals"]["home"] | 0;
     f.awayGoals  = fxo["goals"]["away"] | 0;
     f.weAreHome  = (homeId == ourId);
@@ -614,9 +655,9 @@ api::Result fetchLiveMatch(model::Snapshot& out) {
     // is whatever the fixture list recorded when it spotted which upcoming
     // match had gone live.
     //
-    // liveOpponentId may still be 0 if the fixture list has not been fetched
-    // yet this session, in which case the opponent's crest simply appears
-    // once it has. Drawing nothing is the correct behaviour for id 0.
+    // liveOpponentId is 0 if the match could not be identified — after a
+    // restart mid-match whose cached fixture list had already moved on, say.
+    // Drawing nothing is the correct behaviour for id 0.
     const uint16_t ourFootballDataId = footballDataTeam();
     f.homeId = f.weAreHome ? ourFootballDataId : out.liveOpponentId;
     f.awayId = f.weAreHome ? out.liveOpponentId : ourFootballDataId;
@@ -679,6 +720,10 @@ api::Result fetchLiveMatch(model::Snapshot& out) {
     return api::Result::Ok;
   }
 
+  // Nothing in progress, so nobody to remember. Leaving the last opponent's id
+  // here would keep their crest occupying one of the four cached slots.
+  out.liveOpponentId = 0;
+  out.liveOpponentName[0] = '\0';
   Serial.println(F("[prov] no live match for our team"));
   return api::Result::Ok;
 }
