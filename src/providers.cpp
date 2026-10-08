@@ -387,17 +387,26 @@ void parseNextFixtureImpl(const JsonDocument& doc, model::Snapshot& out) {
                f.weAreHome ? f.awayName : f.homeName);
       continue;
     }
-    // Preserve any form already derived for our side.
-    char ourForm[model::kFormLen];
-    strncpy(ourForm,
-            out.nextFixture.weAreHome ? out.nextFixture.homeForm
-                                      : out.nextFixture.awayForm,
-            sizeof(ourForm));
-    ourForm[sizeof(ourForm) - 1] = '\0';
+    // Carry the form guides across. Each comes from a different request, and
+    // this one supplies neither: replacing the fixture wholesale used to wipe
+    // the opponent's form, and since that is fetched only when the opponent
+    // changes, it then stayed blank until something else reset it — a
+    // restart, or a refresh from the web page. That is what made it come and
+    // go in the days before the Norwich match.
+    const model::Fixture prev = out.nextFixture;
+    const char* ourForm = prev.weAreHome ? prev.homeForm : prev.awayForm;
+    const char* theirForm = prev.weAreHome ? prev.awayForm : prev.homeForm;
     out.nextFixture = f;
     setField(out.nextFixture.weAreHome ? out.nextFixture.homeForm
                                        : out.nextFixture.awayForm,
              ourForm);
+    // Only if it is still the same opponent, or it would be the wrong club's.
+    if (prev.valid && model::Snapshot::opponentOf(prev) ==
+                          model::Snapshot::opponentOf(f)) {
+      setField(out.nextFixture.weAreHome ? out.nextFixture.awayForm
+                                         : out.nextFixture.homeForm,
+               theirForm);
+    }
     Serial.printf("[prov] next: %s v %s md%u\n", f.homeTla, f.awayTla,
                   f.matchday);
     return;
@@ -418,8 +427,16 @@ api::Result fetchOpponentForm(model::Snapshot& out) {
 
   // Only refetch when the opponent actually changes, which is roughly once a
   // matchday. Their form is not going to move between our own fixtures.
+  //
+  // Unless the form is missing. Remembering the last opponent fetched is not
+  // the same as knowing their form is still on the fixture, and treating it
+  // as if it were is how a form guide that had been wiped stayed blank.
   static uint16_t lastFetchedFor = 0;
-  if (opponentId == lastFetchedFor) return api::Result::Ok;
+  const char* theirForm = out.nextFixture.weAreHome ? out.nextFixture.awayForm
+                                                    : out.nextFixture.homeForm;
+  if (opponentId == lastFetchedFor && theirForm[0] != '\0') {
+    return api::Result::Ok;
+  }
 
   JsonDocument filter;
   buildMatchFilter(filter);
