@@ -11,6 +11,13 @@ subjects clear is what keeps this file useful.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-08
+
+- feat: list every one of our scorers, scrollable with vertical swipes — the request asked for the top 100 when the Championship already had 157 scorers, so all five of Bolton's one-goal players were cut off; the full list is now streamed a scorer at a time and only the entries used are cached, about 1 KB
+- fix: keep the opponent's form on the Next panel across fixture refreshes, which used to wipe it until the next restart
+- fix: fetch a new opponent's form as soon as they appear on the Next panel, rather than up to six hours later — Stoke's form never appeared during the Norwich match
+- fix: identify the live opponent from the next fixture, so their crest and full name show during a match; football-data stops listing a match as scheduled once it kicks off, so the old lookup never found it
+
 ## [0.2.2] - 2026-09-12
 
 - fix: stop truncating the signed redirect URL when following a release download — the 768-byte header buffer cut GitHub's ~910-character asset URL at 757, mid-signature, and a truncated redirect is now refused rather than followed
