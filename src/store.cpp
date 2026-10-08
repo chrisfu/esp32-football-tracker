@@ -89,8 +89,12 @@ constexpr uint32_t kMetaMagic = 0x46425431;  // "FBT1"
  * perfectly valid-looking cache sat on disk until its TTL expired.
  *
  * Version 2: team ids retained in the standings and scorers documents.
+ * Version 3: scorers reduced to the league top five plus all of ours, and
+ * without team names. Without the bump a cached top-100 list survives the
+ * upgrade, and the screen goes on showing two of our seven scorers for up
+ * to a day after the firmware that fixes it is installed.
  */
-constexpr uint16_t kCacheSchemaVersion = 2;
+constexpr uint16_t kCacheSchemaVersion = 3;
 
 /// Header written ahead of the entries.
 struct MetaHeader {

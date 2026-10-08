@@ -95,7 +95,7 @@ constexpr SeedScorer kSeedLeagueScorers[] = {
     {"Ethan Galbraith",   "STK", 4, 6},
 };
 
-/// Bolton's scorers, filtered from the same /scorers?limit=100 response.
+/// Bolton's scorers, filtered from the same /scorers response.
 /// Real values: nobody at the foot of the table reaches the league top ten,
 /// which is exactly why the wider request is needed.
 constexpr SeedScorer kSeedTeamScorers[] = {
@@ -306,7 +306,7 @@ void loadPlaceholder(Snapshot& out) {
       sizeof(kSeedTeamScorers) / sizeof(kSeedTeamScorers[0]);
   static_assert(kLeagueCount <= Snapshot::kMaxScorers,
                 "seed league scorers exceed Snapshot capacity");
-  static_assert(kTeamCount <= Snapshot::kMaxScorers,
+  static_assert(kTeamCount <= Snapshot::kMaxTeamScorers,
                 "seed team scorers exceed Snapshot capacity");
 
   copyScorers(kSeedLeagueScorers, kLeagueCount, out.leagueScorers);

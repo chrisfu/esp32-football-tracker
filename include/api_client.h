@@ -76,6 +76,27 @@ void begin(const char* apiSportsKey, const char* footballDataKey);
 Response fetch(Provider provider, const char* path, JsonDocument& doc,
                JsonDocument& filter);
 
+/// Called once per array element by fetchEach(). The element is only valid
+/// for the duration of the call; copy out whatever is worth keeping.
+using ElementHandler = void (*)(JsonObjectConst element, void* ctx);
+
+/**
+ * Perform a GET and hand each element of one array in the response to
+ * `handler`, parsed through `filter`, one at a time.
+ *
+ * For responses whose *filtered* form is still too big to hold. fetch() keeps
+ * the whole filtered document resident, which is fine for a 24-row table and
+ * not for a scorers list that grows past 250 entries by the end of a season.
+ * Here only one element is ever in memory, so the length of the array no
+ * longer matters.
+ *
+ * @param arrayKey name of the array to walk, e.g. "scorers". Assumed to occur
+ *        once in the response, and not as a key inside an earlier object.
+ * @param filter   applied to each element, not to the whole response.
+ */
+Response fetchEach(Provider provider, const char* path, const char* arrayKey,
+                   JsonDocument& filter, ElementHandler handler, void* ctx);
+
 /**
  * Serialise an already-filtered document to the cache.
  *

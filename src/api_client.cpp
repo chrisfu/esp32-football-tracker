@@ -121,6 +121,11 @@ class YieldingStream : public Stream {
   size_t write(uint8_t) override { return 0; }  // Read-only.
 
   int read() override {
+    if (pending_ >= 0) {
+      const int b = pending_;
+      pending_ = -1;
+      return b;
+    }
     if (!chunked_) return rawRead();
     if (!ensureChunk()) return -1;
     const int b = rawRead();
@@ -131,6 +136,12 @@ class YieldingStream : public Stream {
 
   size_t readBytes(char* buffer, size_t length) override {
     size_t total = 0;
+    if (pending_ >= 0 && length > 0) {
+      // Already counted when it was first read.
+      buffer[total++] = static_cast<char>(pending_);
+      pending_ = -1;
+      --bytesRead_;
+    }
     while (total < length) {
       if (chunked_) {
         if (!ensureChunk()) break;
@@ -151,6 +162,16 @@ class YieldingStream : public Stream {
   }
 
   uint32_t bytesRead() const { return bytesRead_; }
+
+  /**
+   * Put one byte back, to be returned by the next read.
+   *
+   * Needed to find out whether an array is empty without consuming the first
+   * byte of its first element. peek() cannot be used for this: it goes
+   * straight to the socket, bypassing the de-chunking, so at a chunk boundary
+   * it would return a digit of the chunk header.
+   */
+  void unread(int b) { pending_ = b; }
 
  private:
   /// True when no more data can arrive: peer closed and buffer drained, or
@@ -246,7 +267,70 @@ class YieldingStream : public Stream {
   size_t   chunkRemaining_ = 0;
   bool     finished_       = false;
   uint32_t bytesRead_      = 0;
+  int      pending_        = -1;
 };
+
+/// Reads a response body. Returns the parse outcome.
+using BodyReader = DeserializationError (*)(YieldingStream& stream, void* ctx);
+
+/// The body as one document, through a filter.
+struct WholeBody {
+  JsonDocument* doc;
+  JsonDocument* filter;
+};
+
+DeserializationError readWhole(YieldingStream& stream, void* ctx) {
+  WholeBody& b = *static_cast<WholeBody*>(ctx);
+  b.doc->clear();
+  return deserializeJson(*b.doc, stream,
+                         DeserializationOption::Filter(*b.filter));
+}
+
+/// One array in the body, element by element.
+struct EachBody {
+  const char*   arrayKey;
+  JsonDocument* filter;
+  ElementHandler handler;
+  void*         ctx;
+};
+
+DeserializationError readEach(YieldingStream& stream, void* ctx) {
+  EachBody& b = *static_cast<EachBody*>(ctx);
+
+  // Skip to the opening bracket of the array we want. Everything before it is
+  // discarded unparsed — football-data puts the competition and season
+  // objects ahead of the list.
+  char key[40];
+  snprintf(key, sizeof(key), "\"%s\":", b.arrayKey);
+  if (!stream.find(key) || !stream.find("[")) {
+    return DeserializationError::InvalidInput;
+  }
+
+  // An empty array is valid and simply has nothing in it. The first
+  // non-space byte says which case this is, and is put back if it is the
+  // start of an element.
+  int c;
+  do {
+    c = stream.read();
+  } while (c == ' ' || c == '\n' || c == '\r' || c == '\t');
+  if (c < 0) return DeserializationError::IncompleteInput;
+  if (c == ']') return DeserializationError::Ok;
+  stream.unread(c);
+
+  // One element's worth of memory, reused. ArduinoJson stops reading at the
+  // end of the value, which is what makes it possible to parse an array of
+  // any length a piece at a time.
+  JsonDocument element;
+  for (;;) {
+    const DeserializationError err = deserializeJson(
+        element, stream, DeserializationOption::Filter(*b.filter));
+    if (err) return err;
+    b.handler(element.as<JsonObjectConst>(), b.ctx);
+    // Either another element follows, or the array is over.
+    if (!stream.findUntil(",", "]")) break;
+  }
+  return DeserializationError::Ok;
+}
 
 /// Case-insensitive prefix test, since header names are not case-sensitive.
 bool headerIs(const char* line, const char* name) {
@@ -332,8 +416,11 @@ bool canAfford(Provider provider) {
   return remaining > kDailyReserve;
 }
 
-Response fetch(Provider provider, const char* path, JsonDocument& doc,
-               JsonDocument& filter) {
+namespace {
+
+/// The request itself, with the body handed to `read`.
+Response exchange(Provider provider, const char* path, BodyReader read,
+                  void* ctx) {
   Response resp;
   const uint32_t started = millis();
 
@@ -449,10 +536,8 @@ Response fetch(Provider provider, const char* path, JsonDocument& doc,
   }
 
   // --- Body, streamed straight into the parser ----------------------------
-  doc.clear();
   YieldingStream stream(client, deadline, chunked);
-  const DeserializationError err = deserializeJson(
-      doc, stream, DeserializationOption::Filter(filter));
+  const DeserializationError err = read(stream, ctx);
 
   resp.bytesReceived = stream.bytesRead();
   client.stop();
@@ -490,6 +575,20 @@ Response fetch(Provider provider, const char* path, JsonDocument& doc,
       (unsigned long)resp.elapsedMs, (unsigned long)handshakeMs,
       (unsigned long)(heapAfterTls / 1024), resp.quotaRemaining);
   return resp;
+}
+
+}  // namespace
+
+Response fetch(Provider provider, const char* path, JsonDocument& doc,
+               JsonDocument& filter) {
+  WholeBody body{&doc, &filter};
+  return exchange(provider, path, readWhole, &body);
+}
+
+Response fetchEach(Provider provider, const char* path, const char* arrayKey,
+                   JsonDocument& filter, ElementHandler handler, void* ctx) {
+  EachBody body{arrayKey, &filter, handler, ctx};
+  return exchange(provider, path, readEach, &body);
 }
 
 }  // namespace api

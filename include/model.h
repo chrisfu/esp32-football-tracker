@@ -210,7 +210,16 @@ struct Scorer {
 /// drawing. The refresh scheduler owns the only mutable path.
 struct Snapshot {
   static constexpr uint8_t kMaxTableRows = 24;  ///< Championship size.
+  /// League leaders: only the first is displayed, as context.
   static constexpr uint8_t kMaxScorers   = 5;
+  /**
+   * Our own scorers, which are listed in full.
+   *
+   * Sized for a whole squad rather than a top few. Bolton had seven different
+   * scorers by matchday nine; a club rarely reaches twenty over a season,
+   * and a row costs 34 bytes in each of the two snapshots.
+   */
+  static constexpr uint8_t kMaxTeamScorers = 24;
 
   TableRow table[kMaxTableRows];
   uint8_t  tableRows = 0;
@@ -227,16 +236,14 @@ struct Snapshot {
   uint8_t leagueScorerCount = 0;
 
   /**
-   * Our own team's scorers.
+   * Our own team's scorers: all of them, highest first.
    *
-   * Obtained from the same single request as the league list: asking for
-   * `?limit=100` returns everyone who has scored at all (the list bottoms out
-   * at one goal), so our players are filtered out of that response locally.
-   * One request serves both views — and our team's scorers would otherwise
-   * never appear, since a side near the foot of the table has nobody in the
-   * league top ten.
+   * Obtained from the same single request as the league list, which asks for
+   * every scorer in the competition and filters ours out locally. One request
+   * serves both views — and our team's scorers would otherwise never appear,
+   * since a side near the foot of the table has nobody in the league top ten.
    */
-  Scorer  teamScorers[kMaxScorers];
+  Scorer  teamScorers[kMaxTeamScorers];
   uint8_t teamScorerCount = 0;
 
   /**

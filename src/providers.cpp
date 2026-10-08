@@ -481,34 +481,68 @@ api::Result fetchOpponentForm(model::Snapshot& out) {
 // Scorers
 // ---------------------------------------------------------------------------
 
+namespace {
+
+/// What fetchScorers() keeps as the list streams past.
+struct ScorerSieve {
+  JsonDocument kept;
+  uint16_t     ourId     = 0;
+  uint16_t     seen      = 0;
+  uint8_t      leaders   = 0;
+  uint8_t      ours      = 0;
+};
+
+/// Keep the league leaders and every one of ours; let the rest go by.
+void sieveScorer(JsonObjectConst e, void* ctx) {
+  ScorerSieve& s = *static_cast<ScorerSieve*>(ctx);
+  ++s.seen;
+  const bool leader = s.leaders < model::Snapshot::kMaxScorers;
+  const bool ours = s.ourId != 0 && (e["team"]["id"] | 0) == s.ourId &&
+                    s.ours < model::Snapshot::kMaxTeamScorers;
+  if (leader) ++s.leaders;
+  if (ours) ++s.ours;
+  if (leader || ours) s.kept["scorers"].add(e);
+}
+
+}  // namespace
+
 api::Result fetchScorers(model::Snapshot& out) {
   JsonDocument filter;
-  JsonObject sc = filter["scorers"].add<JsonObject>();
-  sc["goals"]         = true;
-  sc["playedMatches"] = true;
-  sc["player"]["name"] = true;
-  sc["team"]["tla"]    = true;
-  sc["team"]["name"]   = true;
+  filter["goals"]          = true;
+  filter["playedMatches"]  = true;
+  filter["player"]["name"] = true;
+  filter["team"]["tla"]    = true;
   // Needed to tell our own players from everyone else's; the name comparison
   // it replaces was unreliable for the same reason as in the standings.
-  sc["team"]["id"]     = true;
+  filter["team"]["id"]     = true;
 
-  // 100 rather than the default 10: the list bottoms out at one goal, so this
-  // is what makes our own team's scorers reachable at all. A side near the
-  // foot of the table has nobody in the league top ten.
+  // Every scorer in the competition, because ours are anywhere in it. This
+  // asked for 100 and that was not enough: by matchday nine the Championship
+  // had 157 scorers, so Bolton's five one-goal players were all cut off and
+  // the screen showed two names out of seven. 500 covers a full season with
+  // room to spare — the provider returns however many there are.
+  //
+  // Streamed element by element rather than parsed whole. A full season's
+  // list is ~250 entries, which even filtered would need tens of kilobytes of
+  // document alongside the TLS buffers; one entry at a time needs almost none.
   char path[80];
-  snprintf(path, sizeof(path), "/v4/competitions/%s/scorers?limit=100",
+  snprintf(path, sizeof(path), "/v4/competitions/%s/scorers?limit=500",
            competition());
 
-  JsonDocument doc;
+  ScorerSieve sieve;
+  sieve.ourId = footballDataTeam();
   const api::Response r =
-      api::fetch(api::Provider::FootballData, path, doc, filter);
+      api::fetchEach(api::Provider::FootballData, path, "scorers", filter,
+                     sieveScorer, &sieve);
   if (!r.ok()) return r.result;
 
-  parseScorers(doc, out);
-  api::persist(store::Doc::Scorers, doc, 24 * 3600);
-  Serial.printf("[prov] scorers: %u league, %u ours\n", out.leagueScorerCount,
-                out.teamScorerCount);
+  // The reduced list has the same shape as the response, so it goes through
+  // the same parser as a cached copy would, and is what gets cached: a few
+  // kilobytes rather than the whole competition.
+  parseScorers(sieve.kept, out);
+  api::persist(store::Doc::Scorers, sieve.kept, 24 * 3600);
+  Serial.printf("[prov] scorers: %u listed, %u league, %u ours\n", sieve.seen,
+                out.leagueScorerCount, out.teamScorerCount);
   return api::Result::Ok;
 }
 
@@ -528,7 +562,7 @@ void parseScorersImpl(const JsonDocument& doc, model::Snapshot& out) {
     const bool ours = (ourId != 0) && ((e["team"]["id"] | 0) == ourId);
 
     // The response is ordered by goals, so the first few are the league
-    // leaders and the first few of ours are our leaders. No sorting needed.
+    // leaders and ours arrive highest first. No sorting needed.
     model::Scorer* dst = nullptr;
     if (out.leagueScorerCount < model::Snapshot::kMaxScorers) {
       dst = &out.leagueScorers[out.leagueScorerCount++];
@@ -539,7 +573,7 @@ void parseScorersImpl(const JsonDocument& doc, model::Snapshot& out) {
       dst->goals  = e["goals"] | 0;
       dst->played = e["playedMatches"] | 0;
     }
-    if (ours && out.teamScorerCount < model::Snapshot::kMaxScorers) {
+    if (ours && out.teamScorerCount < model::Snapshot::kMaxTeamScorers) {
       model::Scorer& t = out.teamScorers[out.teamScorerCount++];
       setField(t.name, e["player"]["name"] | "");
       setField(t.tla, e["team"]["tla"] | "");

@@ -291,11 +291,23 @@ The league scoring chart is identical for every user of every device, and a
 side in the bottom half never appears in it. Our own team's scorers are the
 interesting view.
 
-**Verified achievable on the free tier.** `/competitions/ELC/scorers?limit=100`
-returns 100 entries — the list bottoms out at a single goal, so *everyone who
-has scored* is included, and our players can be filtered out locally. For Bolton
-that yields Sam Dalby (2), Thierry Gale (1) and Xavier Simons (1), none of whom
-come close to the league top ten.
+**Verified achievable on the free tier.** The scorers list bottoms out at a
+single goal, so asking for enough entries includes *everyone who has scored*,
+and our players can be filtered out locally.
+
+"Enough" was first set at 100, which covered the whole list early in the season
+and then quietly stopped doing so. By matchday nine the Championship had 157
+scorers, and `limit=100` cut off every one-goal player: Bolton showed Sam Dalby
+(3) and Thierry Gale (3) while Xavier Simons, Ethan Erhahon, Ruben Rodrigues,
+Larra and Atsuki Ito were all missing. The request now asks for 500, which a
+24-club season will not reach, and the provider returns however many exist.
+
+That response is ~100 KB now and approaching 200 KB by May, and even filtered
+it would be tens of kilobytes of document alongside TLS. So it is parsed one
+element at a time (`api::fetchEach`), keeping only the league top five and our
+own players. Only that reduced list is cached — about 1 KB. Every one of our
+scorers is listed, and the screen scrolls with vertical swipes when they do
+not all fit.
 
 So **one request serves both views**: our team's list as the main content, and
 the league leader as a single line of context. The screen labels which list it
@@ -441,6 +453,10 @@ The whole cache is about 18 KB of the 1408 KB filesystem. The scorers response
 is the one that proves the approach: 62 KB streamed through a filter on a board
 whose largest contiguous heap block is 110 KB, with heap steady at 174 KB
 throughout and back to 224 KB afterwards.
+
+(Those are the original `limit=100` figures. The scorers request now streams
+the full list a scorer at a time and stores only the entries it uses, about
+1 KB — see §4.6.)
 
 **A reboot costs zero API calls.** The cache repopulates the screens before the
 radio has even associated, and the schedule is then aligned to the cached
