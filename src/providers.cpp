@@ -90,6 +90,20 @@ void readFixture(JsonObjectConst m, uint16_t ourId, model::Fixture& f) {
   f.valid = true;
 }
 
+/**
+ * Whether two kick-off times, one from each provider, are the same match.
+ *
+ * Kick-off is the only thing the providers have in common — their fixture
+ * and team ids are unrelated. A tolerance rather than equality, so a time
+ * corrected by one provider before the other still matches; two hours is
+ * far less than the gap between any club's matches.
+ */
+bool sameKickoff(uint32_t a, uint32_t b) {
+  if (a == 0 || b == 0) return false;
+  const uint32_t gap = a > b ? a - b : b - a;
+  return gap <= 2 * 3600;
+}
+
 /// Our result in a completed fixture: 'W', 'D' or 'L'.
 char resultChar(const model::Fixture& f) {
   const int8_t ours   = f.weAreHome ? f.homeGoals : f.awayGoals;
@@ -360,27 +374,39 @@ void parseNextFixtureImpl(const JsonDocument& doc, model::Snapshot& out) {
     // Skip the match being played, so Next never duplicates Live. Matched on
     // kick-off rather than id because the two providers number fixtures
     // differently and only the time is common to both.
-    if (liveKickoff != 0 && f.kickoffUtc == liveKickoff) {
-      // This is the match being played. Remember the opponent before moving
-      // on: the live feed is api-sports, whose team ids are unrelated to
-      // football-data's, so this is the only point at which the two can be
-      // associated.
+    //
+    // Rarely seen in practice: this request asks for scheduled matches, and
+    // once a match kicks off football-data lists it as IN_PLAY, so it drops
+    // out of the response. It still turns up in the minutes before the
+    // provider notices the kick-off. Asking for IN_PLAY as well is not the
+    // fix it looks like — a multi-status query comes back in a different
+    // order, and `limit=3` then returns fixtures from next April.
+    if (sameKickoff(f.kickoffUtc, liveKickoff)) {
       out.liveOpponentId = model::Snapshot::opponentOf(f);
       setField(out.liveOpponentName,
                f.weAreHome ? f.awayName : f.homeName);
       continue;
     }
-    // Preserve any form already derived for our side.
-    char ourForm[model::kFormLen];
-    strncpy(ourForm,
-            out.nextFixture.weAreHome ? out.nextFixture.homeForm
-                                      : out.nextFixture.awayForm,
-            sizeof(ourForm));
-    ourForm[sizeof(ourForm) - 1] = '\0';
+    // Carry the form guides across. Each comes from a different request, and
+    // this one supplies neither: replacing the fixture wholesale used to wipe
+    // the opponent's form, and since that is fetched only when the opponent
+    // changes, it then stayed blank until something else reset it — a
+    // restart, or a refresh from the web page. That is what made it come and
+    // go in the days before the Norwich match.
+    const model::Fixture prev = out.nextFixture;
+    const char* ourForm = prev.weAreHome ? prev.homeForm : prev.awayForm;
+    const char* theirForm = prev.weAreHome ? prev.awayForm : prev.homeForm;
     out.nextFixture = f;
     setField(out.nextFixture.weAreHome ? out.nextFixture.homeForm
                                        : out.nextFixture.awayForm,
              ourForm);
+    // Only if it is still the same opponent, or it would be the wrong club's.
+    if (prev.valid && model::Snapshot::opponentOf(prev) ==
+                          model::Snapshot::opponentOf(f)) {
+      setField(out.nextFixture.weAreHome ? out.nextFixture.awayForm
+                                         : out.nextFixture.homeForm,
+               theirForm);
+    }
     Serial.printf("[prov] next: %s v %s md%u\n", f.homeTla, f.awayTla,
                   f.matchday);
     return;
@@ -401,8 +427,16 @@ api::Result fetchOpponentForm(model::Snapshot& out) {
 
   // Only refetch when the opponent actually changes, which is roughly once a
   // matchday. Their form is not going to move between our own fixtures.
+  //
+  // Unless the form is missing. Remembering the last opponent fetched is not
+  // the same as knowing their form is still on the fixture, and treating it
+  // as if it were is how a form guide that had been wiped stayed blank.
   static uint16_t lastFetchedFor = 0;
-  if (opponentId == lastFetchedFor) return api::Result::Ok;
+  const char* theirForm = out.nextFixture.weAreHome ? out.nextFixture.awayForm
+                                                    : out.nextFixture.homeForm;
+  if (opponentId == lastFetchedFor && theirForm[0] != '\0') {
+    return api::Result::Ok;
+  }
 
   JsonDocument filter;
   buildMatchFilter(filter);
@@ -447,34 +481,68 @@ api::Result fetchOpponentForm(model::Snapshot& out) {
 // Scorers
 // ---------------------------------------------------------------------------
 
+namespace {
+
+/// What fetchScorers() keeps as the list streams past.
+struct ScorerSieve {
+  JsonDocument kept;
+  uint16_t     ourId     = 0;
+  uint16_t     seen      = 0;
+  uint8_t      leaders   = 0;
+  uint8_t      ours      = 0;
+};
+
+/// Keep the league leaders and every one of ours; let the rest go by.
+void sieveScorer(JsonObjectConst e, void* ctx) {
+  ScorerSieve& s = *static_cast<ScorerSieve*>(ctx);
+  ++s.seen;
+  const bool leader = s.leaders < model::Snapshot::kMaxScorers;
+  const bool ours = s.ourId != 0 && (e["team"]["id"] | 0) == s.ourId &&
+                    s.ours < model::Snapshot::kMaxTeamScorers;
+  if (leader) ++s.leaders;
+  if (ours) ++s.ours;
+  if (leader || ours) s.kept["scorers"].add(e);
+}
+
+}  // namespace
+
 api::Result fetchScorers(model::Snapshot& out) {
   JsonDocument filter;
-  JsonObject sc = filter["scorers"].add<JsonObject>();
-  sc["goals"]         = true;
-  sc["playedMatches"] = true;
-  sc["player"]["name"] = true;
-  sc["team"]["tla"]    = true;
-  sc["team"]["name"]   = true;
+  filter["goals"]          = true;
+  filter["playedMatches"]  = true;
+  filter["player"]["name"] = true;
+  filter["team"]["tla"]    = true;
   // Needed to tell our own players from everyone else's; the name comparison
   // it replaces was unreliable for the same reason as in the standings.
-  sc["team"]["id"]     = true;
+  filter["team"]["id"]     = true;
 
-  // 100 rather than the default 10: the list bottoms out at one goal, so this
-  // is what makes our own team's scorers reachable at all. A side near the
-  // foot of the table has nobody in the league top ten.
+  // Every scorer in the competition, because ours are anywhere in it. This
+  // asked for 100 and that was not enough: by matchday nine the Championship
+  // had 157 scorers, so Bolton's five one-goal players were all cut off and
+  // the screen showed two names out of seven. 500 covers a full season with
+  // room to spare — the provider returns however many there are.
+  //
+  // Streamed element by element rather than parsed whole. A full season's
+  // list is ~250 entries, which even filtered would need tens of kilobytes of
+  // document alongside the TLS buffers; one entry at a time needs almost none.
   char path[80];
-  snprintf(path, sizeof(path), "/v4/competitions/%s/scorers?limit=100",
+  snprintf(path, sizeof(path), "/v4/competitions/%s/scorers?limit=500",
            competition());
 
-  JsonDocument doc;
+  ScorerSieve sieve;
+  sieve.ourId = footballDataTeam();
   const api::Response r =
-      api::fetch(api::Provider::FootballData, path, doc, filter);
+      api::fetchEach(api::Provider::FootballData, path, "scorers", filter,
+                     sieveScorer, &sieve);
   if (!r.ok()) return r.result;
 
-  parseScorers(doc, out);
-  api::persist(store::Doc::Scorers, doc, 24 * 3600);
-  Serial.printf("[prov] scorers: %u league, %u ours\n", out.leagueScorerCount,
-                out.teamScorerCount);
+  // The reduced list has the same shape as the response, so it goes through
+  // the same parser as a cached copy would, and is what gets cached: a few
+  // kilobytes rather than the whole competition.
+  parseScorers(sieve.kept, out);
+  api::persist(store::Doc::Scorers, sieve.kept, 24 * 3600);
+  Serial.printf("[prov] scorers: %u listed, %u league, %u ours\n", sieve.seen,
+                out.leagueScorerCount, out.teamScorerCount);
   return api::Result::Ok;
 }
 
@@ -494,7 +562,7 @@ void parseScorersImpl(const JsonDocument& doc, model::Snapshot& out) {
     const bool ours = (ourId != 0) && ((e["team"]["id"] | 0) == ourId);
 
     // The response is ordered by goals, so the first few are the league
-    // leaders and the first few of ours are our leaders. No sorting needed.
+    // leaders and ours arrive highest first. No sorting needed.
     model::Scorer* dst = nullptr;
     if (out.leagueScorerCount < model::Snapshot::kMaxScorers) {
       dst = &out.leagueScorers[out.leagueScorerCount++];
@@ -505,7 +573,7 @@ void parseScorersImpl(const JsonDocument& doc, model::Snapshot& out) {
       dst->goals  = e["goals"] | 0;
       dst->played = e["playedMatches"] | 0;
     }
-    if (ours && out.teamScorerCount < model::Snapshot::kMaxScorers) {
+    if (ours && out.teamScorerCount < model::Snapshot::kMaxTeamScorers) {
       model::Scorer& t = out.teamScorers[out.teamScorerCount++];
       setField(t.name, e["player"]["name"] | "");
       setField(t.tla, e["team"]["tla"] | "");
@@ -571,6 +639,7 @@ api::Result fetchLiveMatch(model::Snapshot& out) {
 
   const uint16_t ourId = apiSportsTeam();
   out.liveActive = false;
+  const uint32_t prevLiveKickoff = out.live.fixture.kickoffUtc;
 
   for (JsonObjectConst fxo : doc["response"].as<JsonArrayConst>()) {
     const uint16_t homeId = fxo["teams"]["home"]["id"] | 0;
@@ -580,6 +649,29 @@ api::Result fetchLiveMatch(model::Snapshot& out) {
     model::LiveMatch& m = out.live;
     m = model::LiveMatch{};
     model::Fixture& f = m.fixture;
+    const uint32_t kickoff = parseIso8601(fxo["fixture"]["date"] | "");
+
+    // Which football-data club we are playing. The live feed cannot say — its
+    // ids are api-sports' — but until the fixture list is next refreshed, the
+    // next fixture *is* this match, kick-off and all.
+    //
+    // This used to rely on the fixture list alone, which was meant to spot
+    // the match among the upcoming ones. It never could: once a match kicks
+    // off, football-data stops listing it as scheduled, so it is no longer
+    // in that response. The opponent's id stayed 0, and with it went their
+    // crest and full name — Norwich showed neither, all match, despite both
+    // being on the Next panel minutes earlier.
+    if (out.nextFixture.valid &&
+        sameKickoff(out.nextFixture.kickoffUtc, kickoff)) {
+      const model::Fixture& n = out.nextFixture;
+      out.liveOpponentId = model::Snapshot::opponentOf(n);
+      setField(out.liveOpponentName, n.weAreHome ? n.awayName : n.homeName);
+    } else if (!sameKickoff(prevLiveKickoff, kickoff)) {
+      // Neither this match nor one already identified. Better no crest than
+      // the last opponent's.
+      out.liveOpponentId = 0;
+      out.liveOpponentName[0] = '\0';
+    }
 
     // Prefer football-data's club names over api-sports', which abbreviates:
     // "Bolton" rather than "Bolton Wanderers", "Cardiff" rather than "Cardiff
@@ -602,7 +694,7 @@ api::Result fetchLiveMatch(model::Snapshot& out) {
     setField(f.homeName, weAreHomeSide ? ourName : oppName);
     setField(f.awayName, weAreHomeSide ? oppName : ourName);
     setField(f.competition, fxo["league"]["name"] | "");
-    f.kickoffUtc = parseIso8601(fxo["fixture"]["date"] | "");
+    f.kickoffUtc = kickoff;
     f.homeGoals  = fxo["goals"]["home"] | 0;
     f.awayGoals  = fxo["goals"]["away"] | 0;
     f.weAreHome  = (homeId == ourId);
@@ -614,9 +706,9 @@ api::Result fetchLiveMatch(model::Snapshot& out) {
     // is whatever the fixture list recorded when it spotted which upcoming
     // match had gone live.
     //
-    // liveOpponentId may still be 0 if the fixture list has not been fetched
-    // yet this session, in which case the opponent's crest simply appears
-    // once it has. Drawing nothing is the correct behaviour for id 0.
+    // liveOpponentId is 0 if the match could not be identified — after a
+    // restart mid-match whose cached fixture list had already moved on, say.
+    // Drawing nothing is the correct behaviour for id 0.
     const uint16_t ourFootballDataId = footballDataTeam();
     f.homeId = f.weAreHome ? ourFootballDataId : out.liveOpponentId;
     f.awayId = f.weAreHome ? out.liveOpponentId : ourFootballDataId;
@@ -679,6 +771,10 @@ api::Result fetchLiveMatch(model::Snapshot& out) {
     return api::Result::Ok;
   }
 
+  // Nothing in progress, so nobody to remember. Leaving the last opponent's id
+  // here would keep their crest occupying one of the four cached slots.
+  out.liveOpponentId = 0;
+  out.liveOpponentName[0] = '\0';
   Serial.println(F("[prov] no live match for our team"));
   return api::Result::Ok;
 }

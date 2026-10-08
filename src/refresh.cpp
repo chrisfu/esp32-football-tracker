@@ -142,6 +142,8 @@ uint32_t g_postMatchDueAt  = 0;
 bool     g_wasLive         = false;
 /// Reported once per dry spell, so a silent stop is never a mystery.
 bool     g_quotaWarned     = false;
+/// The next fixture's opponent as of the last pass, to spot it changing.
+uint16_t g_nextOpponent    = 0;
 
 uint32_t nowUtc() {
   const time_t t = time(nullptr);
@@ -370,6 +372,23 @@ bool runDue(uint32_t now) {
     // display indefinitely, which is exactly what it did.
     g_staging.liveActive = false;
     fetched = true;
+  }
+
+  // A new opponent on the Next panel needs their form now, not whenever the
+  // form task's interval next comes round. That interval restarts every time
+  // the task runs, including the runs that find nothing to do, so when a
+  // match kicked off and Next moved on to the following fixture, the new
+  // opponent's form could be six hours away — Stoke's never appeared during
+  // the Norwich match at all.
+  const uint16_t nextOpponent =
+      g_staging.nextFixture.valid
+          ? model::Snapshot::opponentOf(g_staging.nextFixture)
+          : 0;
+  if (nextOpponent != g_nextOpponent) {
+    g_nextOpponent = nextOpponent;
+    for (Task& t : g_tasks) {
+      if (strcmp(t.name, "oppform") == 0) t.lastOkAt = 0;
+    }
   }
 
   // Then one scheduled task per pass, so a burst of due work is spread out

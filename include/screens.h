@@ -116,6 +116,9 @@ class LeagueTableScreen : public Screen {
  * same for everyone and rarely features a side in the bottom half. The league
  * leader is still shown as a single line of context, since both lists come
  * from one request and it costs nothing to display.
+ *
+ * Every one of our scorers is listed, which is more than fit at once, so the
+ * list scrolls the same way the league table does.
  */
 class TopScorerScreen : public Screen {
  public:
@@ -124,6 +127,23 @@ class TopScorerScreen : public Screen {
     return d.teamScorerCount > 0 || d.leagueScorerCount > 0;
   }
   void draw(TFT_eSPI& tft, const model::Snapshot& d) override;
+  /// Takes vertical swipes for scrolling; leaves horizontal ones to navigate.
+  bool handleGesture(touch::Gesture g) override;
+  /// Reopens at the top, on the leading scorer.
+  void onShow(const model::Snapshot& d) override;
+
+  static constexpr int16_t kRowHeight = 32;
+  /// Space reserved at the bottom for the league-leader line.
+  static constexpr int16_t kContextStrip = 20;
+  /// Space above the rows, taken by the heading and its rule.
+  static constexpr int16_t kHeadingGap = 26;
+
+  /// Rows visible at once, given the row height and the reserved strips.
+  static uint8_t visibleRows();
+
+ private:
+  uint8_t scroll_   = 0;
+  uint8_t rowCount_ = 0;
 };
 
 /**

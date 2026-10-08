@@ -40,7 +40,7 @@ Screens cycle automatically, and any of them can be turned off.
 | **Last** | Most recent result with both crests, the verdict and the competition |
 | **Next** | Next fixture, countdown, both clubs' recent form, both crests |
 | **Table** | Full league table (MP, W, D, L, GF, GA, GD, Pts), opening on your club |
-| **Scorers** | Your club's top scorers, with the league leader for context |
+| **Scorers** | Every one of your club's scorers, scrollable, with the league leader for context |
 
 A match in progress takes over: the device shows it by default and returns to
 it after the dwell period, so you are never more than a few seconds from the

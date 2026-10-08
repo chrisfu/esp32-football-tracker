@@ -912,14 +912,64 @@ void LeagueTableScreen::draw(TFT_eSPI& tft, const model::Snapshot& d) {
 // Top scorers
 // ---------------------------------------------------------------------------
 
+namespace {
+
+/// Prefer our own team's scorers. The league chart is identical for every
+/// user of every device, and a side in the bottom half never appears in it.
+uint8_t scorersShown(const model::Snapshot& d) {
+  return d.teamScorerCount > 0 ? d.teamScorerCount : d.leagueScorerCount;
+}
+
+}  // namespace
+
+uint8_t TopScorerScreen::visibleRows() {
+  return static_cast<uint8_t>(
+      (kContentHeight - kHeadingGap - kContextStrip) / kRowHeight);
+}
+
+void TopScorerScreen::onShow(const model::Snapshot& d) {
+  rowCount_ = scorersShown(d);
+  scroll_   = 0;
+}
+
+bool TopScorerScreen::handleGesture(touch::Gesture g) {
+  const uint8_t visible = visibleRows();
+  if (rowCount_ <= visible) return false;  // Nothing to scroll; let it pass.
+
+  const uint8_t maxScroll = rowCount_ - visible;
+  // Most of a page per swipe, keeping one row in view as an anchor — the same
+  // as the league table, so the two lists behave alike.
+  const uint8_t step = visible > 1 ? visible - 1 : 1;
+
+  switch (g) {
+    case touch::Gesture::SwipeUp:
+      if (scroll_ >= maxScroll) return false;  // At the end: don't swallow it.
+      scroll_ = static_cast<uint8_t>(min<int16_t>(scroll_ + step, maxScroll));
+      return true;
+    case touch::Gesture::SwipeDown:
+      if (scroll_ == 0) return false;
+      scroll_ = static_cast<uint8_t>(max<int16_t>(scroll_ - step, 0));
+      return true;
+    default:
+      return false;
+  }
+}
+
 void TopScorerScreen::draw(TFT_eSPI& tft, const model::Snapshot& d) {
-  // Prefer our own team's scorers. The league chart is identical for every
-  // user of every device, and a side in the bottom half never appears in it.
   const bool showingTeam = d.teamScorerCount > 0;
   const model::Scorer* list =
       showingTeam ? d.teamScorers : d.leagueScorers;
-  const uint8_t count =
-      showingTeam ? d.teamScorerCount : d.leagueScorerCount;
+  const uint8_t count = scorersShown(d);
+
+  // A refresh can shorten the list while it is scrolled — a goal ruled out,
+  // or a new season — so the position is kept within what is now there.
+  rowCount_ = count;
+  const uint8_t visible = visibleRows();
+  if (count <= visible) {
+    scroll_ = 0;
+  } else if (scroll_ > count - visible) {
+    scroll_ = count - visible;
+  }
 
   // Say whose list this is, so the numbers are never ambiguous — two goals
   // makes sense as a team-leading tally and nonsense as a league-leading one.
@@ -931,19 +981,25 @@ void TopScorerScreen::draw(TFT_eSPI& tft, const model::Snapshot& d) {
   tft.setTextDatum(TR_DATUM);
   tft.setTextColor(colour::kMuted, colour::kBackground);
   tft.drawString("GLS", board::kScreenWidth - 8, kContentTop + 4, 2);
+  // Scroll position, between the heading and the column label, so it is
+  // clear more scorers exist off-screen.
+  if (count > visible) {
+    char pos[16];
+    snprintf(pos, sizeof(pos), "%u-%u of %u", scroll_ + 1, scroll_ + visible,
+             count);
+    tft.setTextDatum(TC_DATUM);
+    tft.drawString(pos, board::kScreenWidth / 2 + 20, kContentTop + 4, 2);
+  }
   tft.drawFastHLine(0, kContentTop + 22, board::kScreenWidth, colour::kMuted);
 
-  // Reserve a strip at the bottom for the league-leader context line, so rows
-  // cannot grow into it.
-  constexpr int16_t kContextStrip = 20;
-  constexpr int16_t kRowHeight    = 32;
-  const int16_t rowsTop    = kContentTop + 26;
-  const int16_t rowsBottom = kContentBottom - kContextStrip;
+  // The strip at the bottom is reserved for the league-leader context line,
+  // so rows cannot grow into it.
+  const int16_t rowsTop = kContentTop + kHeadingGap;
+  const uint8_t last = min<uint8_t>(scroll_ + visible, count);
 
-  for (uint8_t i = 0; i < count; ++i) {
+  for (uint8_t i = scroll_; i < last; ++i) {
     const model::Scorer& sc = list[i];
-    const int16_t rowTop = rowsTop + i * kRowHeight;
-    if (rowTop + kRowHeight > rowsBottom) break;  // Out of room; stop cleanly.
+    const int16_t rowTop = rowsTop + (i - scroll_) * kRowHeight;
     const int16_t cy = rowTop + kRowHeight / 2 - 2;
 
     char rank[6];
